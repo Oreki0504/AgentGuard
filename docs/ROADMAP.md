@@ -44,8 +44,8 @@ Define enough of the system before implementation begins.
 - [x] Runtime Defaults and mandatory Security Baseline are distinguished.
 - [x] Implementation phases are defined.
 - [x] Design principles are documented.
-- [ ] Phase 0 documents have been reviewed for duplicated or conflicting responsibilities.
-- [ ] Repository metadata and root files are aligned with the current project definition.
+- [x] Phase 0 documents have been reviewed for duplicated or conflicting responsibilities.
+- [x] Repository metadata and root files are aligned with the current project definition.
 
 ---
 
@@ -218,7 +218,7 @@ Initial capabilities:
 - [ ] `no_new_privs` is applied where required.
 - [ ] A first seccomp profile is implemented.
 - [ ] At least one intentionally forbidden syscall is verified to fail.
-- [ ] WorkloadSpec security intent is translated into backend-specific enforcement without exposing Linux details in the high-level policy model.
+- [ ] WorkloadSpec security intent is translated into backend-specific enforcement without exposing Linux-specific details in the WorkloadSpec contract.
 - [ ] Failure to establish required protection prevents Workload startup.
 - [ ] AgentGuard never silently falls back to unrestricted host execution.
 

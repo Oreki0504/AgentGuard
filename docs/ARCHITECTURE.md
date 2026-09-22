@@ -58,48 +58,48 @@ That stronger model would require additional runtime confinement and is outside 
 ## 3. High-Level Architecture
 
 ```text
-                        Agent Runtime
-                             |
-                             v
+                         CONTROL PLANE
 
-+--------------------------------------------------------------+
-|                      CONTROL PLANE                           |
-|                                                              |
-|                     +---------------+                        |
-|                     | Policy Engine |                        |
-|                     +-------+-------+                        |
-|                             |                                |
-|                      PolicyDecision                          |
-+-----------------------------|--------------------------------+
-                              |
-              +---------------+---------------+
-              |               |               |
-              v               v               v
+                    +-------------------+
+                    |   Policy Engine   |
+                    +-------------------+
+                       ^       ^       ^
+                       |       |       |
+                 PolicyQuery / PolicyDecision
+                       |       |       |
+-----------------------|-------|-------|-----------------------
+                    ENFORCEMENT PLANE
 
-        +-----------+    +-----------+    +-------------+
-        |   Model   |    |   Tool    |    |   Network   |
-        |  Gateway  |    |  Gateway  |    |   Gateway   |
-        +-----+-----+    +-----+-----+    +------+------+
-              |                |                 |
-              v                v                 v
-       LLM Providers      WorkloadSpec       Internet / APIs
-                               |
-                               v
-                       +---------------+
-                       |    Sandbox    |
-                       |    Runtime    |
-                       +-------+-------+
-                               |
-                               v
-                       +---------------+
-                       |   Workload    |
-                       +-------+-------+
-                               |
-                         controlled egress
-                               |
-                               v
-                        Network Gateway
+                 +-----+-----+ +-----+-----+ +------+------+
+                 |   Model   | |   Tool    | |   Network   |
+                 |  Gateway  | |  Gateway  | |   Gateway   |
+                 +-----+-----+ +-----+-----+ +------+------+
+                       ^             ^              ^
+                       |             |              |
+                       +-------------+--------------+
+                                     |
+                               Agent Runtime
 ```
+
+Capability paths then continue from the Gateways:
+
+```text
+Model Gateway   ----> LLM Providers
+
+Tool Gateway    ----> WorkloadSpec Builder
+                          |
+                          v
+                    Sandbox Runtime
+                          |
+                          v
+                       Workload
+
+Network Gateway ----> Internet / APIs
+
+Workload        ----> controlled egress ----> Network Gateway
+```
+
+The **Agent Runtime sends capability requests to the appropriate Gateway**. The Policy Engine is logically above the Gateways, but it is not an inline transport hop for those requests. Instead, each Gateway submits a `PolicyQuery` and receives a `PolicyDecision` before enforcing the operation.
 
 The Network Gateway may appear in two roles:
 
@@ -233,21 +233,35 @@ For the initial MVP, this is guaranteed for Workloads created by AgentGuard.
 
 Gateways are application-level **Policy Enforcement Points (PEPs)**.
 
-Each Gateway mediates one capability class.
+Each Gateway mediates one capability class and consults the same Policy Engine.
+
+The generic interaction is:
 
 ```text
-                 Policy Engine
-                /      |      \
-               v       v       v
-            Model     Tool   Network
-           Gateway  Gateway  Gateway
+Capability Request
+       |
+       v
+Gateway (PEP)
+       |
+       +---- PolicyQuery --------> Policy Engine (PDP)
+       |                               |
+       |<--- PolicyDecision -----------+
+       |
+       +---- DENY ----> return denial
+       |
+       +---- ALLOW ---> enforce capability-specific constraints
 ```
+
+The request itself enters through a Gateway. The Policy Engine acts as the **Policy Decision Point (PDP)**; it does not proxy the capability request.
+
+This same pattern applies to Model, Tool, and Network Gateways.
 
 Gateways:
 
 - validate requests;
-- query policy;
-- enforce decisions;
+- submit policy queries;
+- receive policy decisions;
+- enforce those decisions;
 - produce security-relevant audit events.
 
 Gateways do not define independent global policy.
@@ -383,27 +397,35 @@ A Workload has an explicit lifecycle.
 ```text
 PREPARING
     |
-    +---- setup failure ----> FAILED
+    +---- setup failure --------> CLEANING --------> FAILED
     |
     v
 RUNNING
     |
-    +---- normal exit ----+
-    +---- timeout --------+
-    +---- explicit kill --+
-    +---- runtime failure-+
-                         |
-                         v
-                    TERMINATING
-                         |
-                         v
-                      CLEANING
-                         |
-                         v
-                      FINISHED
+    +---- process exit --------------------------+
+    |                                            |
+    +---- timeout / explicit kill /              |
+    |     runtime-control failure                |
+    |                 |                          |
+    |                 v                          |
+    |            TERMINATING                     |
+    |                 |                          |
+    +-----------------+--------------------------+
+                      |
+                      v
+                   CLEANING
+                      |
+              +-------+-------+
+              |               |
+       cleanup success   cleanup failure
+              |               |
+              v               v
+           FINISHED         FAILED
 ```
 
 A denied ToolRequest does not create a Workload.
+
+Once runtime resources have been created, failure paths must pass through cleanup before reaching a terminal state. A process exit may still carry a non-zero exit code; terminal Workload state and process result should remain distinguishable.
 
 The exact state model may evolve during implementation.
 
@@ -695,10 +717,11 @@ Agent Runtime
      v
 Tool Gateway
      |
-     v
-Policy Engine
+     +---- PolicyQuery --------> Policy Engine
+     |                              |
+     |<--- PolicyDecision ----------+
      |
-     +---- DENY ----> Audit + Result
+     +---- DENY ----------------> Audit + ToolResult
      |
     ALLOW
      |
@@ -717,6 +740,8 @@ Cleanup
      v
 Audit + ToolResult
 ```
+
+The Tool Gateway remains the enforcement point throughout the request. The Policy Engine only returns the decision and constraints used by that enforcement path.
 
 The Agent Runtime does not directly create AgentGuard-managed Workloads.
 
@@ -743,17 +768,18 @@ Sandbox Network Boundary
    v
 Network Gateway
    |
-   v
-Policy Engine
+   +---- PolicyQuery --------> Policy Engine
+   |                              |
+   |<--- PolicyDecision ----------+
    |
    +---- DENY
    |
-   +---- ALLOW ----> Internet / API
+   +---- ALLOW ----------------> Internet / API
 ```
 
-The Sandbox Runtime guarantees the path is not bypassed.
+The Sandbox Runtime guarantees that the controlled path cannot be bypassed.
 
-The Network Gateway evaluates destinations.
+The Network Gateway remains the enforcement point and evaluates the destination using the Policy Engine's decision.
 
 ---
 
@@ -784,14 +810,15 @@ connect to github.com?
    v
 Network Gateway
    |
-   v
-Policy Engine
+   +---- PolicyQuery --------> Policy Engine
+   |                              |
+   |<--- PolicyDecision ----------+
    |
    v
 ALLOW / DENY
 ```
 
-The Policy Engine may therefore remain active after Workload creation.
+The Policy Engine may therefore remain active after Workload creation, while the Network Gateway remains responsible for enforcement.
 
 ---
 
