@@ -1,9 +1,10 @@
 # AgentGuard Architecture
 
-> This document defines the initial architecture of AgentGuard.  
-> It focuses on component boundaries, trust boundaries, workload execution, policy decisions, and enforcement responsibilities.
+> This document defines AgentGuard's system structure, component boundaries, and major data flows.
 >
-> AgentGuard is still in early development. This document is expected to evolve as implementation work provides new constraints and evidence.
+> Threats belong in `THREAT_MODEL.md`.  
+> Implementation order belongs in `ROADMAP.md`.  
+> Project-wide security rules belong in `DESIGN_PRINCIPLES.md`.
 
 ---
 
@@ -11,7 +12,7 @@
 
 AgentGuard is a **security control plane for AI agents**.
 
-Its purpose is to mediate and constrain how AI agents interact with external capabilities such as:
+Its purpose is to mediate and constrain access to capabilities such as:
 
 - local tools;
 - shell execution;
@@ -20,192 +21,146 @@ Its purpose is to mediate and constrain how AI agents interact with external cap
 - APIs;
 - LLM providers.
 
-AgentGuard assumes that an agent, its generated code, its tool arguments, and content influenced by external inputs may be untrusted or less trusted.
+The central architectural rule is:
 
-The core architectural principle is:
+> **Policy decides what is allowed. Gateways enforce capability access. The Sandbox Runtime enforces workload-level operating-system constraints. Audit records security-relevant events.**
 
-> **Policy defines the allowed security state. Gateways enforce capability-level policy. The Sandbox Runtime enforces operating-system-level isolation. Audit records what happened.**
+AgentGuard is divided conceptually into:
 
-AgentGuard is organized into two conceptual planes:
-
-- **Control Plane** — policy, identity, configuration, and security decisions;
-- **Enforcement Plane** — gateways and runtime mechanisms that make those decisions real.
+- **Control Plane** — policy and security decisions;
+- **Enforcement Plane** — components that make those decisions effective.
 
 ---
 
-## 2. Architectural Goals
+## 2. Trust Model
 
-AgentGuard should:
+The initial single-host design assumes that the **Agent Runtime integration itself is trusted to route protected capabilities through AgentGuard**.
 
-- provide a unified security policy layer across multiple agent capabilities;
-- prevent agent runtimes from directly accessing sensitive capabilities without mediation;
-- separate policy decisions from low-level enforcement mechanisms;
-- provide a reusable runtime for executing untrusted workloads;
-- prevent sandboxed workloads from bypassing network or filesystem controls;
-- make security behavior testable and observable;
-- fail closed when required protections cannot be established;
-- support incremental development without requiring the entire control plane to exist from day one.
+Agent-controlled inputs are not trusted.
 
----
+Examples include:
 
-## 3. Non-Goals
+- tool calls;
+- generated commands;
+- generated code;
+- requested paths;
+- network destinations;
+- external content;
+- downloaded dependencies;
+- Workloads.
 
-AgentGuard is not intended to be:
+The initial MVP does **not** claim to prevent a fully compromised Agent Runtime from intentionally bypassing AgentGuard by directly accessing host capabilities.
 
-- a replacement for Docker;
-- a general-purpose container runtime;
-- a Kubernetes platform;
-- an AI agent framework;
-- an MCP framework;
-- an antivirus product;
-- an EDR platform;
-- a general-purpose firewall;
-- a complete DLP product;
-- a guarantee that arbitrary untrusted code is safe;
-- a defense against all kernel vulnerabilities, side channels, or hardware attacks.
-
-AgentGuard aims to reduce the impact of untrusted or compromised agent behavior under a clearly defined threat model.
+That stronger model would require additional runtime confinement and is outside the first implementation scope.
 
 ---
 
-# 4. High-Level Architecture
-
-AgentGuard is divided into a **Control Plane** and an **Enforcement Plane**.
+## 3. High-Level Architecture
 
 ```text
-                         Agent Runtime
+                        Agent Runtime
+                             |
+                             v
+
++--------------------------------------------------------------+
+|                      CONTROL PLANE                           |
+|                                                              |
+|                     +---------------+                        |
+|                     | Policy Engine |                        |
+|                     +-------+-------+                        |
+|                             |                                |
+|                      PolicyDecision                          |
++-----------------------------|--------------------------------+
                               |
-                              v
+              +---------------+---------------+
+              |               |               |
+              v               v               v
 
-+------------------------------------------------------------------+
-|                    AgentGuard Control Plane                      |
-|                                                                  |
-|                      +----------------+                          |
-|                      | Policy Engine  |                          |
-|                      +--------+-------+                          |
-|                               |                                  |
-|                     policy decisions                             |
-|                               |                                  |
-+-------------------------------|----------------------------------+
-                                |
-              +-----------------+-----------------+
-              |                 |                 |
-              v                 v                 v
-
-        +-----------+     +-----------+     +-------------+
-        |   Model   |     |   Tool    |     |   Network   |
-        |  Gateway  |     |  Gateway  |     |   Gateway   |
-        +-----+-----+     +-----+-----+     +------+------+
-              |                 |                  |
-              |                 |                  |
-              v                 v                  v
-       LLM Providers       Workload Path        Internet / APIs
-                                |
-                                v
-                        +---------------+
-                        | Workload Spec |
-                        +-------+-------+
-                                |
-                                v
-                        +---------------+
-                        |    Sandbox    |
-                        |    Runtime    |
-                        +-------+-------+
-                                |
-                                v
-                        +---------------+
-                        |   Workload    |
-                        |               |
-                        | Process Tree  |
-                        | Filesystem    |
-                        | Resources     |
-                        | Network ID    |
-                        | Audit Context |
-                        +-------+-------+
-                                |
-                        outbound traffic
-                                |
-                                v
-                         Network Gateway
-                                |
-                                v
-                         Internet / APIs
+        +-----------+    +-----------+    +-------------+
+        |   Model   |    |   Tool    |    |   Network   |
+        |  Gateway  |    |  Gateway  |    |   Gateway   |
+        +-----+-----+    +-----+-----+    +------+------+
+              |                |                 |
+              v                v                 v
+       LLM Providers      WorkloadSpec       Internet / APIs
+                               |
+                               v
+                       +---------------+
+                       |    Sandbox    |
+                       |    Runtime    |
+                       +-------+-------+
+                               |
+                               v
+                       +---------------+
+                       |   Workload    |
+                       +-------+-------+
+                               |
+                         controlled egress
+                               |
+                               v
+                        Network Gateway
 ```
 
-The Network Gateway appears in two logical relationships:
+The Network Gateway may appear in two roles:
 
-1. it is a peer of the Model Gateway and Tool Gateway as an application-level enforcement point;
-2. it may also act as the controlled egress path for network traffic originating from a workload.
+1. as a peer Gateway for network capability requests;
+2. as the controlled egress path for Workload traffic.
 
-This does **not** make the Network Gateway a child of the Sandbox Runtime.
+This does not make it part of the Sandbox Runtime.
 
 ---
 
-# 5. Control Plane and Enforcement Plane
+## 4. Control Plane
 
-## 5.1 Control Plane
+The Control Plane defines the intended security state.
 
-The Control Plane defines desired security behavior.
+Its primary component is the **Policy Engine**.
 
-Initial Control Plane responsibilities include:
-
-- policy loading;
-- policy evaluation;
-- workload security constraints;
-- agent identity;
-- policy identity and versioning;
-- configuration;
-- future policy distribution.
-
-The Policy Engine belongs to the Control Plane.
-
-The Control Plane should describe **what is allowed**, not how Linux implements it.
-
-For example:
+A policy decision may answer questions such as:
 
 ```text
-memory <= 512 MiB
-network = controlled
-filesystem = workspace-only
-timeout <= 30 s
+May agent "coding-agent" execute shell commands?
+
+If yes:
+    timeout <= 30s
+    memory <= 512MiB
+    processes <= 64
+    filesystem = workspace-only
+    network = controlled
 ```
 
-The Policy Engine should not need to know whether those constraints are implemented using:
+The Control Plane describes **what must be true**.
 
-- cgroup v2;
-- network namespaces;
-- proxies;
-- mount namespaces;
-- seccomp;
-- virtual machines.
+It should not depend on Linux-specific mechanisms such as:
 
----
-
-## 5.2 Enforcement Plane
-
-The Enforcement Plane makes Control Plane decisions real.
-
-It contains:
-
-- Model Gateway;
-- Tool Gateway;
-- Network Gateway;
-- Sandbox Runtime;
-- Linux enforcement mechanisms.
-
-The Enforcement Plane is responsible for ensuring that an allowed operation stays within its authorized boundaries.
+- cgroup files;
+- mount operations;
+- namespace setup;
+- seccomp filters.
 
 ---
 
-# 6. Policy Engine
+## 5. Policy Engine
 
 The Policy Engine is AgentGuard's central **Policy Decision Point (PDP)**.
 
-Its responsibility is to answer:
+A conceptual query contains:
 
-> **Who may perform what action on which resource, under what conditions?**
+```text
+Subject
+    who is requesting?
 
-A conceptual policy query may contain:
+Action
+    what operation is requested?
+
+Resource
+    what capability or resource is targeted?
+
+Context
+    what additional conditions apply?
+```
+
+Example:
 
 ```text
 Subject:
@@ -216,14 +171,12 @@ Action:
 
 Resource:
     tool = shell
-    command = ["python3", "main.py"]
 
 Context:
-    workspace = project-A
-    environment = development
+    workspace = project-a
 ```
 
-A policy decision may be:
+A decision may be:
 
 ```text
 DENY
@@ -242,46 +195,68 @@ Constraints:
     network = controlled
 ```
 
-The Policy Engine does **not**:
+The Policy Engine does not perform enforcement.
+
+It does not:
 
 - execute processes;
+- configure cgroups;
 - create namespaces;
-- create cgroups;
+- mount filesystems;
 - install seccomp filters;
-- configure mounts;
 - proxy network traffic;
 - call LLM providers.
 
-It produces **security decisions and constraints**.
+---
+
+## 6. Enforcement Plane
+
+The Enforcement Plane applies Control Plane decisions.
+
+It contains:
+
+- Tool Gateway;
+- Network Gateway;
+- Model Gateway;
+- Sandbox Runtime;
+- low-level Linux enforcement mechanisms.
+
+The major enforcement rule is:
+
+> **A capability may be used only through its intended enforcement path.**
+
+For the initial MVP, this is guaranteed for Workloads created by AgentGuard.
 
 ---
 
-# 7. Gateways
+## 7. Gateways
 
 Gateways are application-level **Policy Enforcement Points (PEPs)**.
 
-Each Gateway mediates a specific class of capability.
+Each Gateway mediates one capability class.
 
 ```text
                  Policy Engine
                 /      |      \
-               /       |       \
-              v        v        v
-           Model      Tool    Network
-          Gateway   Gateway   Gateway
+               v       v       v
+            Model     Tool   Network
+           Gateway  Gateway  Gateway
 ```
 
-The Policy Engine is logically above all Gateways.
+Gateways:
 
-Gateways do not own the policy model.
+- validate requests;
+- query policy;
+- enforce decisions;
+- produce security-relevant audit events.
 
-They consume Policy Engine decisions and enforce them for their respective capability class.
+Gateways do not define independent global policy.
 
 ---
 
-## 7.1 Tool Gateway
+## 8. Tool Gateway
 
-The Tool Gateway mediates agent tool usage.
+The Tool Gateway mediates tool access.
 
 Initial tool classes may include:
 
@@ -289,103 +264,90 @@ Initial tool classes may include:
 - command execution;
 - file reads;
 - file writes;
-- future local tools;
-- future external tool integrations.
+- local tools.
 
-The Tool Gateway answers questions such as:
+For execution-oriented tools, the Tool Gateway:
 
-- is this tool available to this agent?
-- is this request structurally valid?
-- has policy authorized this invocation?
-- does this request require a workload?
+```text
+ToolRequest
+    |
+    v
+validate
+    |
+    v
+PolicyQuery
+    |
+    v
+PolicyDecision
+    |
+    +---- DENY ----> return denial
+    |
+   ALLOW
+    |
+    v
+build WorkloadSpec
+    |
+    v
+Sandbox Runtime
+```
 
-For execution-oriented tools, the Tool Gateway converts an authorized request into a **WorkloadSpec**.
-
-The Tool Gateway should not contain Linux isolation code.
+The Tool Gateway must not contain Linux isolation logic.
 
 ---
 
-## 7.2 Network Gateway
+## 9. Network Gateway
 
 The Network Gateway controls outbound network access.
 
-It may enforce:
+Potential controls include:
 
 - destination allowlists;
 - destination denylists;
 - private-network restrictions;
 - loopback restrictions;
 - link-local restrictions;
-- cloud metadata protections;
-- domain-based policy;
-- IP-based policy;
-- request auditing.
+- cloud metadata protection;
+- domain/IP policy;
+- network auditing.
 
-The Network Gateway can act as the controlled egress path for sandboxed workloads.
-
-The Sandbox Runtime is responsible for preventing workloads from bypassing that path.
-
-This creates two complementary controls:
+For Workload traffic, responsibilities are split:
 
 ```text
-Sandbox Runtime:
-    "You may only exit through this controlled path."
+Sandbox Runtime
+    prevents bypass of the controlled path
 
-Network Gateway:
-    "This controlled path may reach these destinations."
+Network Gateway
+    decides what destinations are allowed
+
+Policy Engine
+    defines the policy
 ```
 
 ---
 
-## 7.3 Model Gateway
+## 10. Model Gateway
 
 The Model Gateway mediates access to LLM providers.
 
 Potential controls include:
 
-- model allowlists;
 - provider allowlists;
-- provider routing;
-- request-size limits;
+- model allowlists;
+- request limits;
 - token limits;
-- secret detection;
-- request auditing;
-- cost controls;
-- rate limits.
+- credential isolation;
+- usage auditing;
+- optional routing.
 
-The Model Gateway is not required for the first MVP.
-
----
-
-# 8. Workload
-
-## 8.1 Definition
-
-A **Workload** is a uniquely identifiable, policy-constrained execution unit created by AgentGuard to run an approved untrusted or less-trusted task.
-
-A workload may contain one or more processes and is associated with:
-
-- an immutable execution specification;
-- an isolated runtime environment;
-- resource limits;
-- filesystem visibility;
-- network context;
-- security controls;
-- lifecycle state;
-- audit identity.
-
-A Workload is **not** the same thing as:
-
-- a process;
-- a sandbox;
-- a tool request;
-- a policy decision.
+The Model Gateway is not required for the initial MVP.
 
 ---
 
-## 8.2 Workload vs Process
+## 11. Workload
 
-One Workload may contain many processes.
+A **Workload** is a uniquely identifiable, policy-constrained execution unit created by AgentGuard.
+
+A Workload may contain multiple processes.
 
 Example:
 
@@ -401,53 +363,59 @@ Workload ag-wl-00042
               +-- worker
 ```
 
-This is:
+This is one Workload containing multiple processes.
 
-```text
-1 Workload
-4 Processes
-```
+Security and resource controls apply to the Workload as a whole.
 
-Security constraints apply to the Workload as a whole.
+A Workload is not the same as:
 
-For example:
-
-```text
-Workload memory <= 512 MiB
-Workload process count <= 64
-```
-
-Child processes must not escape those constraints.
+- a Process;
+- a ToolRequest;
+- a PolicyDecision;
+- the Sandbox Runtime.
 
 ---
 
-## 8.3 Workload vs Sandbox Runtime
+## 12. Workload Lifecycle
 
-The **Sandbox Runtime** is infrastructure.
-
-The **Workload** is an execution instance created by that infrastructure.
-
-Conceptually:
+A Workload has an explicit lifecycle.
 
 ```text
-Sandbox Runtime
-      |
-      +-- Workload A
-      +-- Workload B
-      +-- Workload C
+PREPARING
+    |
+    +---- setup failure ----> FAILED
+    |
+    v
+RUNNING
+    |
+    +---- normal exit ----+
+    +---- timeout --------+
+    +---- explicit kill --+
+    +---- runtime failure-+
+                         |
+                         v
+                    TERMINATING
+                         |
+                         v
+                      CLEANING
+                         |
+                         v
+                      FINISHED
 ```
 
-The Sandbox Runtime creates, runs, monitors, and destroys Workloads.
+A denied ToolRequest does not create a Workload.
+
+The exact state model may evolve during implementation.
 
 ---
 
-# 9. WorkloadSpec
+## 13. WorkloadSpec
 
-The **WorkloadSpec** is the contract between higher-level policy/orchestration and the Sandbox Runtime.
+The **WorkloadSpec** is the execution contract passed to the Sandbox Runtime.
 
-It describes the final security and execution requirements for one Workload.
+It describes **what the Workload must look like**, not the Linux-specific mechanisms used to create it.
 
-A conceptual WorkloadSpec may look like:
+Conceptual example:
 
 ```yaml
 workload:
@@ -473,25 +441,33 @@ workload:
     workspace:
       path: /workspace
       mode: read-write
-    host:
-      visible: false
+    host_visibility: restricted
 
   network:
     mode: controlled
 
   security:
-    no_new_privs: true
-    seccomp_profile: coding-default
-    capabilities: []
+    profile: coding-default
+    privilege: unprivileged
 ```
 
 The exact serialization format is not fixed.
 
+The WorkloadSpec should avoid unnecessary backend-specific fields such as:
+
+```text
+seccomp_profile
+cgroup_path
+namespace_flags
+```
+
+Those belong to the runtime implementation.
+
 ---
 
-## 9.1 WorkloadSpec Construction
+## 14. Building a WorkloadSpec
 
-A WorkloadSpec is produced from multiple sources.
+A WorkloadSpec is produced from several inputs:
 
 ```text
 ToolRequest
@@ -499,208 +475,118 @@ ToolRequest
 PolicyDecision
      +
 Runtime Defaults
+     +
+Security Baseline
      |
      v
 WorkloadSpec
 ```
 
-The ToolRequest answers:
+These inputs have different meanings.
 
-> What is being requested?
+### Runtime Defaults
 
-The PolicyDecision answers:
+Defaults are implementation-provided values used when policy does not specify a value.
 
-> What is allowed?
-
-Runtime Defaults answer:
-
-> What baseline protections must always exist?
-
-The WorkloadSpec answers:
-
-> What must this specific execution look like?
-
----
-
-## 9.2 WorkloadSpec Properties
-
-The first implementation should treat the WorkloadSpec as effectively immutable once execution begins.
-
-A Workload must not silently weaken its own constraints.
-
-For example:
+Example:
 
 ```text
-network = controlled
+default timeout = 30s
 ```
 
-must not silently become:
+Defaults may be overridden by policy when allowed.
 
-```text
-network = unrestricted
-```
+### Security Baseline
 
-during execution.
-
----
-
-# 10. Runtime Security Invariants
-
-The Sandbox Runtime must enforce several security invariants regardless of agent behavior.
+The Security Baseline contains mandatory protections that must not be weakened by policy.
 
 Examples:
 
-1. **No silent fallback to unrestricted execution.**
+- no implicit inheritance of host secrets;
+- no unrestricted fallback when isolation fails;
+- Workload-wide lifecycle control.
 
-   If required isolation cannot be established, execution must fail.
-
-2. **All workload processes remain attributable to the workload.**
-
-   Child processes must not escape workload resource and lifecycle controls.
-
-3. **A workload must not inherit AgentGuard's full privilege set.**
-
-4. **Required security mechanisms must fail closed.**
-
-   If a required cgroup, namespace, filesystem rule, or security filter cannot be established, the workload must not start.
-
-5. **Host secrets must not be implicitly inherited.**
-
-6. **Cleanup must be complete.**
-
-   Remaining processes and temporary resources must be removed when the workload terminates.
-
-A key invariant is:
-
-> **Every process created for a workload MUST remain attributable to and contained within that workload for its entire lifetime.**
+The WorkloadSpec builder must preserve these mandatory properties.
 
 ---
 
-# 11. Workload Lifecycle
+## 15. Sandbox Runtime
 
-A Workload should have an explicit lifecycle.
+The Sandbox Runtime consumes a WorkloadSpec and translates it into operating-system enforcement.
 
-A request that is denied by policy does not need to become a Workload.
-
-Conceptually:
+Example:
 
 ```text
-ToolRequest
-    |
-    v
-Policy Evaluation
-    |
-    +------ DENY ------> Request Denied
-    |
-   ALLOW
-    |
-    v
-WorkloadSpec
-    |
-    v
-PREPARING
-    |
-    +------ setup failure ------> FAILED
-    |
-    v
-RUNNING
-    |
-    +------ normal exit --------> CLEANING
-    |
-    +------ timeout ------------> TERMINATING
-    |
-    +------ explicit kill ------> TERMINATING
-    |
-    +------ runtime failure ----> TERMINATING
-                                    |
-                                    v
-                                 CLEANING
-                                    |
-                                    v
-                                 FINISHED
+WorkloadSpec:
+    memory <= 512MiB
+
+Linux Sandbox Runtime:
+    configure cgroup v2 memory limit
 ```
 
-Possible initial states:
+Another example:
 
 ```text
-PREPARING
-RUNNING
-TERMINATING
-CLEANING
-FINISHED
-FAILED
+WorkloadSpec:
+    privilege = unprivileged
+
+Linux Sandbox Runtime:
+    drop capabilities
+    apply no_new_privs
+    apply suitable syscall restrictions
 ```
+
+The Sandbox Runtime does not make high-level authorization decisions.
 
 ---
 
-# 12. Workload Data Model
+## 16. Linux Sandbox Backend
 
-A Workload should conceptually contain three categories of information.
+The first Sandbox Runtime backend targets Linux.
 
-## 12.1 Immutable Specification
+Likely mechanisms include:
 
-```text
-WorkloadSpec
+### Process Isolation
 
-- command
-- arguments
-- working directory
-- timeout
-- filesystem constraints
-- resource constraints
-- network mode
-- security profile
-```
+- PID namespace;
+- user namespace;
+- IPC namespace;
+- UTS namespace where useful.
 
----
+### Filesystem Isolation
 
-## 12.2 Runtime State
+- mount namespace;
+- isolated root filesystem;
+- bind mounts;
+- read-only mounts;
+- writable workspace;
+- tmpfs where useful.
 
-```text
-WorkloadState
+### Resource Control
 
-- status
-- host PID
-- start time
-- end time
-- exit code
-- termination reason
-- resource usage
-```
+- cgroup v2 `memory.max`;
+- cgroup v2 `pids.max`;
+- cgroup v2 `cpu.max`.
 
----
+### Privilege Reduction
 
-## 12.3 Security and Audit Context
+- unprivileged execution;
+- reduced capabilities;
+- `no_new_privs`.
 
-```text
-SecurityContext
+### System Call Restriction
 
-- workload_id
-- request_id
-- agent_id
-- policy_id
-- policy_version
-- correlation_id
-```
+- seccomp.
 
-This allows events across Tool Gateway, Sandbox Runtime, and Network Gateway to be correlated.
+The exact mechanism set will be refined through implementation and testing.
 
 ---
 
-# 13. Environment and Secret Handling
+## 17. Environment and Secrets
 
 Host environment variables must not be inherited by default.
 
-For example, the host may contain:
-
-```text
-AWS_ACCESS_KEY_ID
-AWS_SECRET_ACCESS_KEY
-OPENAI_API_KEY
-GITHUB_TOKEN
-```
-
-A workload should receive only explicitly allowed environment values.
+A Workload should receive only explicitly provided or explicitly allowed values.
 
 Conceptually:
 
@@ -716,221 +602,127 @@ environment:
     APP_MODE: test
 ```
 
-Secrets should eventually be referenced indirectly rather than stored as plaintext in WorkloadSpec or audit logs.
-
-Example future model:
-
-```text
-secret_ref: github-token-for-build
-```
-
-rather than:
-
-```text
-GITHUB_TOKEN=ghp_xxxxxxxxx
-```
+Sensitive credentials should eventually be represented by references or controlled injection mechanisms rather than being embedded directly into WorkloadSpec or audit logs.
 
 ---
 
-# 14. Sandbox Runtime
+## 18. Audit
 
-The Sandbox Runtime consumes WorkloadSpec and translates it into operating-system enforcement.
+Audit is a cross-cutting capability that provides a **structured and correlated record of security-relevant events**.
 
-It does not make high-level authorization decisions.
+It is intended to support:
 
-Example:
+- debugging;
+- security forensics;
+- incident investigation;
+- security test evidence;
+- operational monitoring;
+- future detection and alerting systems.
 
-```text
-WorkloadSpec:
-    memory = 512MiB
-
-Sandbox Runtime:
-    cgroup v2 memory.max = 512MiB
-```
-
-Another example:
+Security-relevant components may emit structured events:
 
 ```text
-WorkloadSpec:
-    network = controlled
-
-Sandbox Runtime:
-    isolate workload networking
-    prevent direct host egress
-    route permitted traffic through controlled network path
+Policy Engine  -----+
+Tool Gateway    ----+
+Sandbox Runtime ----+----> Audit Event Stream
+Network Gateway ----+
+Model Gateway   ----+
 ```
 
-The Sandbox Runtime may eventually include:
+Audit should make it possible to reconstruct a security-relevant execution path and answer questions such as:
 
-- process creation;
-- process-group management;
-- PID namespaces;
-- user namespaces;
-- mount namespaces;
-- network namespaces;
-- filesystem isolation;
-- cgroup v2;
-- seccomp;
-- Linux capability reduction;
-- `no_new_privs`;
-- timeout enforcement;
-- process-tree cleanup;
-- result collection.
+- what happened?
+- who requested it?
+- which request and Workload were involved?
+- what policy decision was made?
+- what enforcement action occurred?
+- what network or resource event occurred?
+- how did the Workload terminate?
+- was cleanup successful?
 
----
-
-# 15. Linux Enforcement Layers
-
-The initial Linux Sandbox is expected to use multiple mechanisms.
-
-## 15.1 Process Isolation
-
-Likely mechanisms:
-
-- PID namespace;
-- user namespace;
-- IPC namespace;
-- UTS namespace.
-
-Goal:
-
-> reduce the workload's visibility into and ability to interfere with host processes and namespaces.
-
----
-
-## 15.2 Filesystem Isolation
-
-Likely mechanisms:
-
-- mount namespace;
-- isolated root filesystem;
-- bind mounts;
-- read-only mounts;
-- writable workspace;
-- tmpfs;
-- possibly `pivot_root`.
-
-Goal:
-
-> expose only the filesystem resources required by the workload.
-
----
-
-## 15.3 Resource Control
-
-Resource control will use **cgroup v2**.
-
-Initial controls:
+Events should carry correlation identifiers where available, for example:
 
 ```text
-memory.max
-pids.max
-cpu.max
+agent_id
+request_id
+workload_id
+policy_id
+correlation_id
 ```
 
-Possible later controls:
+A minimal event may conceptually look like:
+
+```json
+{
+  "event_type": "network.denied",
+  "agent_id": "coding-agent",
+  "request_id": "req-123",
+  "workload_id": "ag-wl-42",
+  "destination": "169.254.169.254",
+  "decision": "deny",
+  "reason": "link-local destination"
+}
+```
+
+The initial implementation may begin with a small structured event interface and a simple sink such as JSON output. More advanced consumers can be added later:
 
 ```text
-io.max
+Audit Event Stream
+        |
+        +--> Logs / Forensics
+        +--> Metrics
+        +--> Monitoring
+        +--> Alerting
+        +--> Detection
+        +--> External SIEM
 ```
 
-Goal:
+Audit does **not** make authorization decisions and does not directly enforce policy.
 
-> prevent one workload from exhausting shared host resources.
+If future active response is needed, that responsibility should belong to a separate monitoring or detection component that consumes Audit events.
 
----
-
-## 15.4 System Call Restriction
-
-The sandbox will use **seccomp** to reduce the available system-call surface.
-
-Potentially restricted operations may include:
-
-- `ptrace`;
-- `mount`;
-- unnecessary namespace operations;
-- other high-risk or unnecessary syscalls.
-
-The exact policy will be determined experimentally.
-
-Seccomp is one layer of defense, not a complete sandbox.
+Audit must also avoid becoming a secret-leakage channel. Sensitive fields should be omitted or redacted before events are emitted.
 
 ---
 
-## 15.5 Privilege Reduction
+## 19. Execution Flow
 
-Potential mechanisms:
-
-- unprivileged execution;
-- user namespaces;
-- dropped Linux capabilities;
-- `no_new_privs`.
-
-The workload should receive only the privilege required by its task.
-
----
-
-# 16. Tool Execution Flow
-
-The first complete execution path will be Tool Gateway -> Workload -> Sandbox Runtime.
-
-Example request:
+The first complete MVP path is:
 
 ```text
-shell(["python3", "main.py"])
+Agent Runtime
+     |
+     v
+Tool Gateway
+     |
+     v
+Policy Engine
+     |
+     +---- DENY ----> Audit + Result
+     |
+    ALLOW
+     |
+     v
+WorkloadSpec Builder
+     |
+     v
+Sandbox Runtime
+     |
+     v
+Workload
+     |
+     v
+Cleanup
+     |
+     v
+Audit + ToolResult
 ```
 
-Flow:
-
-```text
-1. Agent Runtime sends ToolRequest
-                |
-                v
-2. Tool Gateway validates request
-                |
-                v
-3. Tool Gateway submits PolicyQuery
-                |
-                v
-4. Policy Engine returns PolicyDecision
-                |
-         +------+------+
-         |             |
-       DENY           ALLOW
-         |             |
-         v             v
-5a. Audit denial   5b. Build WorkloadSpec
-         |             |
-         v             v
-6a. Return error   6b. Sandbox Runtime prepares workload
-                       |
-                       v
-                   7. Establish isolation
-                       |
-                       v
-                   8. Start workload
-                       |
-                       v
-                   9. Monitor workload
-                       |
-                       v
-                  10. Collect result
-                       |
-                       v
-                  11. Cleanup
-                       |
-                       v
-                  12. Audit
-                       |
-                       v
-                  13. Return ToolResult
-```
-
-The agent never directly starts an unrestricted host process.
+The Agent Runtime does not directly create AgentGuard-managed Workloads.
 
 ---
 
-# 17. Network Flow for Workloads
+## 20. Workload Network Flow
 
 A Workload with:
 
@@ -940,91 +732,54 @@ network = controlled
 
 must not receive unrestricted host networking.
 
-Conceptual flow:
+Conceptually:
 
 ```text
 Workload
    |
-   | outbound connection
    v
 Sandbox Network Boundary
    |
-   | controlled egress only
    v
 Network Gateway
    |
-   | Policy Engine decision
    v
-ALLOW / DENY
+Policy Engine
    |
-   v
-Internet / API
+   +---- DENY
+   |
+   +---- ALLOW ----> Internet / API
 ```
 
-The responsibilities are deliberately split.
+The Sandbox Runtime guarantees the path is not bypassed.
 
-### Sandbox Runtime
-
-Ensures:
-
-> the workload cannot bypass the controlled network path.
-
-### Network Gateway
-
-Ensures:
-
-> only policy-approved destinations are reachable through that path.
-
-### Policy Engine
-
-Defines:
-
-> which network destinations and classes of traffic are allowed.
+The Network Gateway evaluates destinations.
 
 ---
 
-# 18. Creation-Time and Runtime Policy
+## 21. Creation-Time and Runtime Policy
 
-Not all policy decisions occur at the same moment.
+Some policy decisions apply before the Workload starts.
 
-## 18.1 Creation-Time Policy
-
-These decisions typically shape the Workload before it starts:
+Examples:
 
 - timeout;
 - memory limit;
 - process limit;
 - CPU limit;
 - filesystem visibility;
-- security profile;
-- initial network mode.
+- initial network mode;
+- security profile.
+
+Other decisions may occur while the Workload is running.
 
 Example:
 
 ```text
-PolicyDecision:
-    memory <= 512MiB
-```
-
-This becomes part of WorkloadSpec.
-
----
-
-## 18.2 Runtime Policy
-
-Some decisions may occur while the Workload is running.
-
-Examples:
-
-- connect to `github.com`?
-- connect to `pypi.org`?
-- access external API X?
-- future dynamic capability request?
-
-Conceptually:
-
-```text
 Workload
+   |
+   v
+connect to github.com?
    |
    v
 Network Gateway
@@ -1036,168 +791,36 @@ Policy Engine
 ALLOW / DENY
 ```
 
-The Policy Engine therefore remains an active Control Plane component throughout the workload lifecycle.
+The Policy Engine may therefore remain active after Workload creation.
 
 ---
 
-# 19. Audit System
+## 22. Dependency Direction
 
-Audit is a cross-cutting capability.
+The codebase should preserve simple dependency direction.
 
-Security-sensitive components emit structured events.
-
-```text
-Policy Engine  ----+
-Tool Gateway   ----+
-Sandbox Runtime----+----> Audit System
-Network Gateway----+
-Model Gateway  ----+
-```
-
-Audit should answer:
-
-- what happened?
-- who requested it?
-- which workload was involved?
-- what policy was used?
-- what decision was made?
-- what enforcement action occurred?
-- what was the final result?
-
-Example:
-
-```json
-{
-  "event_type": "network.denied",
-  "agent_id": "coding-agent",
-  "workload_id": "ag-wl-00042",
-  "destination": "169.254.169.254",
-  "policy_id": "coding-default",
-  "decision": "deny"
-}
-```
-
-Sensitive values should be redacted by default.
-
-Audit must not become a new secret-leakage channel.
-
----
-
-# 20. Failure Model
-
-Security-sensitive failures should fail closed unless explicitly documented otherwise.
-
-## 20.1 Policy Failure
-
-```text
-cannot evaluate policy
-        |
-        v
-       DENY
-```
-
----
-
-## 20.2 Sandbox Setup Failure
-
-```text
-required isolation cannot be established
-        |
-        v
-do not start workload
-```
-
-AgentGuard must never silently fall back to unrestricted host execution.
-
----
-
-## 20.3 Network Enforcement Failure
-
-If a workload requires controlled networking but the controlled egress path cannot be established:
-
-```text
-network enforcement unavailable
-        |
-        v
-do not start workload
-```
-
-unless policy explicitly permits a more restrictive fallback such as:
-
-```text
-network = disabled
-```
-
-It should never fall back to unrestricted networking.
-
----
-
-## 20.4 Timeout
-
-```text
-timeout reached
-      |
-      v
-terminate complete workload process tree
-      |
-      v
-cleanup
-      |
-      v
-audit
-```
-
----
-
-## 20.5 Cleanup Failure
-
-Cleanup failures must be observable.
-
-Examples:
-
-- surviving processes;
-- leaked mounts;
-- leaked cgroups;
-- leaked network namespaces;
-- leaked temporary files.
-
-Cleanup failure must not be silently ignored.
-
----
-
-# 21. Dependency Direction
-
-The codebase should preserve clear dependency direction.
-
-A possible logical dependency model is:
+Conceptually:
 
 ```text
 cmd
  |
  v
 gateway
+ | \
+ |  +----> policy
+ |  +----> workload
+ |  +----> audit
  |
- +--------> policy
+ v
+workload orchestration
  |
- +--------> workload
- |
- +--------> audit
+ +----> runtime
+ +----> audit
 
-workload / orchestration
+runtime
  |
- +--------> sandbox
- |
- +--------> audit
-
-sandbox
- |
- +--------> low-level Linux implementation
-
-network gateway
- |
- +--------> policy
- |
- +--------> audit
+ v
+linux backend
 ```
 
 Important rules:
@@ -1211,7 +834,7 @@ Important rules:
 
 ---
 
-# 22. Possible Package Layout
+## 23. Possible Package Layout
 
 A future layout may resemble:
 
@@ -1229,193 +852,79 @@ internal/
 └── linux/
 ```
 
-This is not a commitment to create all directories immediately.
+This is not a requirement to create all packages immediately.
 
-Packages should be introduced only when their corresponding functionality exists.
-
----
-
-# 23. Security Test Categories
-
-Security claims should be backed by adversarial tests.
-
-Possible categories:
-
-```text
-tests/attacks/
-├── memory_exhaustion/
-├── fork_bomb/
-├── host_file_read/
-├── host_file_write/
-├── process_probe/
-├── forbidden_syscall/
-├── timeout_escape/
-├── network_bypass/
-└── secret_inheritance/
-```
-
-Expected results:
-
-| Test | Expected Result |
-|---|---|
-| Excessive memory allocation | Limited by cgroup |
-| Fork bomb | Limited by workload process limit |
-| Host sensitive-file read | Denied or unavailable |
-| Host process enumeration | Isolated |
-| Forbidden syscall | Denied |
-| Execution beyond timeout | Entire workload terminated |
-| Direct network bypass | Blocked |
-| Unauthorized destination | Denied by Network Gateway |
-| Host secret environment inheritance | Not present |
+Packages should be introduced only when their functionality exists.
 
 ---
 
-# 24. Implementation Sequence
-
-The architecture is intended to be implemented incrementally.
-
-```text
-Phase 0
-Architecture & Threat Model
-        |
-        v
-Phase 1
-Execution Core
-        |
-        v
-Phase 2
-Workload + Linux Sandbox
-        |
-        v
-Phase 3
-Policy Engine
-        |
-        v
-Phase 4
-Tool Gateway
-        |
-        v
-First MVP
-        |
-        +-------------------+
-        |                   |
-        v                   v
-Phase 5             Phase 6
-Network Gateway     Model Gateway
-        |                   |
-        +---------+---------+
-                  |
-                  v
-              Phase 7
-     Unified Security Control Plane
-```
-
-Each phase must have explicit acceptance criteria.
-
----
-
-# 25. Open Architecture Questions
+## 24. Open Architecture Questions
 
 The following questions remain intentionally unresolved.
 
-## Workload
+### Workload
 
-- When exactly is a Workload ID allocated?
+- When should a Workload ID be allocated?
 - Should WorkloadSpec be persisted?
-- Should workloads support runtime policy changes in the future?
-- How should workload identity be propagated to Network Gateway?
-- How should workload cleanup be verified?
+- How should cleanup success be verified?
+- How should Workload identity propagate to the Network Gateway?
 
-## Sandbox
+### Sandbox Runtime
 
-- Should the first sandbox use an internal init process?
-- Which namespaces are mandatory for the first version?
-- Should rootless operation be mandatory from the beginning?
-- What should the first seccomp profile allow?
-- How should root filesystem images be managed?
+- Which namespaces are mandatory in the first version?
+- Should rootless operation be mandatory initially?
+- Should the sandbox use an internal init process?
+- How should root filesystem state be prepared?
 
-## Policy
+### Policy
 
-- What serialization format should policies use?
+- What initial policy serialization format should be used?
 - How should policy precedence work?
-- Should the first version support roles or only profiles?
-- How should path patterns be matched?
-- How should domain policies be matched?
+- How should path and domain matching work?
 
-## Network
+### Network
 
 - Should controlled egress use a proxy?
-- Should workloads receive a dedicated network namespace?
-- How should DNS rebinding be handled?
-- How should redirects be re-evaluated?
-- How should non-HTTP protocols be handled?
+- Should every Workload receive a dedicated network namespace?
+- How should DNS rebinding and redirects be handled?
+- How should non-HTTP traffic be handled?
 
-## Audit
+### Audit
 
 - Should audit emission be synchronous?
 - What happens if the audit sink fails?
-- Which fields must be redacted?
-- How long should workload correlation metadata be retained?
+- Which fields require redaction?
 
-These should be resolved through focused design work and implementation evidence rather than premature abstraction.
+These questions should be answered through focused implementation work rather than premature abstraction.
 
 ---
 
-# 26. Summary
+## 25. Summary
 
-The core AgentGuard architecture is:
-
-```text
-                     CONTROL PLANE
-
-                    Policy Engine
-                         |
-                 security decisions
-                         |
-       +-----------------+-----------------+
-       |                 |                 |
-       v                 v                 v
- Model Gateway      Tool Gateway      Network Gateway
-                         |
-                         v
-                    WorkloadSpec
-                         |
-                         v
-                   Sandbox Runtime
-                         |
-                         v
-                      Workload
-                         |
-                  controlled egress
-                         |
-                         v
-                  Network Gateway
-```
-
-The key responsibilities are:
+AgentGuard separates security responsibilities:
 
 ```text
 Policy Engine
-    defines what is allowed
+    decides what is allowed
 
 Gateways
-    enforce capability-level policy
+    enforce capability-level access
 
 WorkloadSpec
-    defines the final execution contract
+    defines the execution contract
 
 Sandbox Runtime
-    translates that contract into OS-level enforcement
+    translates the contract into OS enforcement
 
 Workload
-    is the actual controlled execution unit
+    is the controlled execution unit
 
 Audit
-    records what happened
+    records security-relevant behavior
 ```
 
-The most important boundary is:
+The most important architectural boundary is:
 
-> **Policy defines the desired security state. Gateways enforce capability access. The Sandbox Runtime makes workload-level restrictions non-bypassable at the operating-system layer.**
+> **High-level policy must remain independent from low-level enforcement mechanisms.**
 
-This separation allows AgentGuard to evolve into a unified agent security control plane without coupling high-level policy directly to Linux implementation details.
+The initial design also assumes that the Agent Runtime integration itself is trusted not to bypass AgentGuard. Stronger confinement of the Agent Runtime may be added in future hardening work.

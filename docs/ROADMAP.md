@@ -4,26 +4,29 @@
 >
 > Architecture belongs in `ARCHITECTURE.md`.  
 > Security threats belong in `THREAT_MODEL.md`.  
-> This file only defines **what to build, in what order, and how to know each phase is complete**.
+> Project-wide security rules belong in `DESIGN_PRINCIPLES.md`.
+>
+> This file defines **what to build, in what order, and how to know each phase is complete**.
 
 ---
 
-# Phase 0 — Design Baseline
+## Phase 0 — Design Baseline
 
-## Goal
+### Goal
 
 Define enough of the system before implementation begins.
 
-## Scope
+### Scope
 
 - project positioning;
 - architecture baseline;
+- trust assumptions;
 - Workload / WorkloadSpec model;
 - threat model;
 - development roadmap;
 - design principles.
 
-## Deliverables
+### Deliverables
 
 - `README.md`
 - `docs/ARCHITECTURE.md`
@@ -31,25 +34,28 @@ Define enough of the system before implementation begins.
 - `docs/ROADMAP.md`
 - `docs/DESIGN_PRINCIPLES.md`
 
-## Acceptance Criteria
+### Acceptance Criteria
 
 - [x] AgentGuard has a clear project definition.
 - [x] Control Plane and Enforcement Plane are defined.
 - [x] Policy Engine, Gateways, Sandbox Runtime, Workload, and WorkloadSpec have clear responsibilities.
-- [x] Initial threat scenarios and trust assumptions are documented.
+- [x] Agent Runtime trust assumptions are documented.
+- [x] Initial threat scenarios and trust boundaries are documented.
+- [x] Runtime Defaults and mandatory Security Baseline are distinguished.
 - [x] Implementation phases are defined.
-- [ ] Design principles are documented.
+- [x] Design principles are documented.
 - [ ] Phase 0 documents have been reviewed for duplicated or conflicting responsibilities.
+- [ ] Repository metadata and root files are aligned with the current project definition.
 
 ---
 
-# Phase 1 — Execution Core
+## Phase 1 — Execution Core
 
-## Goal
+### Goal
 
-Build a reliable local process execution foundation before adding isolation.
+Build a reliable local process-execution foundation before adding isolation.
 
-## Scope
+### Scope
 
 Implement a process runner capable of executing a command and reliably managing its lifecycle.
 
@@ -67,7 +73,7 @@ Initial capabilities:
 - cancellation;
 - process-tree cleanup.
 
-## Deliverables
+### Deliverables
 
 - AgentGuard CLI entry point;
 - execution request/result types;
@@ -81,7 +87,7 @@ Example target interface:
 agentguard run -- python3 main.py
 ```
 
-## Acceptance Criteria
+### Acceptance Criteria
 
 - [ ] A normal command executes successfully.
 - [ ] Command arguments are passed correctly.
@@ -95,85 +101,140 @@ agentguard run -- python3 main.py
 
 ---
 
-# Phase 2 — Workload + Linux Sandbox
+## Phase 2 — Workload + Linux Sandbox
 
-## Goal
+### Goal
 
 Turn unrestricted process execution into a policy-constrained Linux Workload.
 
-## Scope
+Phase 2 is split into smaller implementation steps so that each isolation mechanism can be understood and verified independently.
 
-Introduce the Workload abstraction and operating-system-level containment.
+---
 
-Initial isolation mechanisms:
+### Phase 2A — Workload Lifecycle + Resource Control
 
-- Workload identity and lifecycle;
+#### Scope
+
+Introduce the Workload abstraction and establish Workload-wide lifecycle and resource control.
+
+Initial capabilities:
+
+- Workload identity;
+- Workload lifecycle;
 - WorkloadSpec;
+- process-tree attribution;
 - cgroup v2;
-- PID / user / mount namespaces as required;
-- filesystem isolation;
-- resource limits;
-- privilege reduction;
-- seccomp;
-- cleanup.
+- memory limits;
+- process-count limits;
+- CPU controls;
+- cleanup;
+- minimal structured security events.
 
-## Deliverables
+#### Deliverables
 
 - `WorkloadSpec`;
-- Workload lifecycle implementation;
-- Sandbox Runtime;
-- Linux-specific enforcement layer;
-- adversarial sandbox tests.
+- Workload state model;
+- Sandbox Runtime skeleton;
+- cgroup v2 integration;
+- minimal Audit event interface;
+- resource-abuse tests.
 
-## Acceptance Criteria
-
-### Workload
+#### Acceptance Criteria
 
 - [ ] Every execution receives a unique Workload identity.
 - [ ] Workload state transitions are observable.
 - [ ] All child processes remain attributable to the Workload.
-- [ ] Cleanup removes remaining processes and temporary runtime resources.
-
-### Resource Control
-
 - [ ] Memory limits apply to the entire Workload.
 - [ ] Process-count limits apply to the entire Workload.
 - [ ] CPU usage can be constrained.
 - [ ] A fork bomb cannot exhaust the host process table.
-- [ ] A memory-exhaustion workload cannot destabilize the host.
+- [ ] A memory-exhaustion Workload cannot destabilize the host.
+- [ ] Timeout or cancellation terminates the complete Workload process tree.
+- [ ] Cleanup removes remaining processes and temporary runtime state.
+- [ ] Important lifecycle and failure events are emitted as structured events.
 
-### Filesystem Isolation
+---
+
+### Phase 2B — Namespace + Filesystem Isolation
+
+#### Scope
+
+Introduce process-visibility and filesystem boundaries.
+
+Initial capabilities:
+
+- PID namespace;
+- user namespace where appropriate;
+- mount namespace;
+- isolated filesystem view;
+- explicit bind mounts;
+- writable workspace;
+- read-only mounts.
+
+#### Deliverables
+
+- namespace setup;
+- filesystem-isolation layer;
+- workspace mount model;
+- adversarial filesystem/process tests.
+
+#### Acceptance Criteria
 
 - [ ] Host files not explicitly exposed are unavailable.
 - [ ] A writable workspace can be explicitly provided.
 - [ ] Read-only mounts remain read-only.
-- [ ] Workload filesystem setup failures prevent execution.
-
-### Process / Privilege Isolation
-
 - [ ] The Workload cannot directly inspect unrelated host processes.
-- [ ] Unnecessary Linux capabilities are removed.
-- [ ] `no_new_privs` is applied where required.
-
-### Syscall Restriction
-
-- [ ] A first seccomp profile is implemented.
-- [ ] At least one intentionally forbidden syscall is verified to fail.
-
-### Failure Behavior
-
-- [ ] Failure to establish required isolation fails closed.
-- [ ] AgentGuard never silently falls back to unrestricted host execution.
+- [ ] Namespace or filesystem setup failure prevents execution.
+- [ ] Host-file and host-process attack tests produce the expected denial behavior.
+- [ ] Security-relevant failures are observable through structured events.
 
 ---
 
-# Phase 3 — Policy Engine
+### Phase 2C — Privilege Reduction + Syscall Hardening
 
-## Goal
+#### Scope
+
+Reduce the privilege and syscall surface available to Workloads.
+
+Initial capabilities:
+
+- unprivileged execution;
+- Linux capability reduction;
+- `no_new_privs`;
+- seccomp;
+- security-profile mapping;
+- fail-closed setup behavior.
+
+#### Deliverables
+
+- privilege-reduction layer;
+- initial seccomp profile;
+- Workload security-profile handling;
+- syscall adversarial tests.
+
+#### Acceptance Criteria
+
+- [ ] Unnecessary Linux capabilities are removed.
+- [ ] `no_new_privs` is applied where required.
+- [ ] A first seccomp profile is implemented.
+- [ ] At least one intentionally forbidden syscall is verified to fail.
+- [ ] WorkloadSpec security intent is translated into backend-specific enforcement without exposing Linux details in the high-level policy model.
+- [ ] Failure to establish required protection prevents Workload startup.
+- [ ] AgentGuard never silently falls back to unrestricted host execution.
+
+### Phase 2 Complete When
+
+All Phase 2A, 2B, and 2C acceptance criteria are satisfied.
+
+---
+
+## Phase 3 — Policy Engine
+
+### Goal
 
 Move security decisions out of hard-coded runtime behavior into an explicit policy layer.
 
-## Scope
+### Scope
 
 Implement a minimal Policy Engine capable of:
 
@@ -183,15 +244,15 @@ Implement a minimal Policy Engine capable of:
 
 The first version should remain intentionally small.
 
-## Deliverables
+### Deliverables
 
 - policy data model;
-- PolicyQuery;
-- PolicyDecision;
+- `PolicyQuery`;
+- `PolicyDecision`;
 - policy loader;
 - evaluator;
 - policy tests;
-- WorkloadSpec construction from PolicyDecision.
+- WorkloadSpec builder integration.
 
 Example conceptual result:
 
@@ -205,12 +266,14 @@ filesystem = workspace-only
 network = disabled
 ```
 
-## Acceptance Criteria
+### Acceptance Criteria
 
 - [ ] Requests without an explicit allow rule are denied.
 - [ ] Policy can allow or deny tool execution.
 - [ ] Policy can produce execution constraints.
-- [ ] Policy constraints are preserved when creating WorkloadSpec.
+- [ ] Runtime Defaults can be overridden only where allowed.
+- [ ] Security Baseline requirements cannot be weakened by ordinary policy.
+- [ ] Policy constraints are preserved when building WorkloadSpec.
 - [ ] Conflicting or invalid policy fails predictably.
 - [ ] Policy Engine contains no Linux-specific enforcement logic.
 - [ ] Policy evaluation is covered by unit tests.
@@ -218,15 +281,15 @@ network = disabled
 
 ---
 
-# Phase 4 — Tool Gateway
+## Phase 4 — Tool Gateway
 
-## Goal
+### Goal
 
 Create the first complete AgentGuard enforcement path.
 
 This phase completes the **initial MVP**.
 
-## Scope
+### Scope
 
 Add a Tool Gateway between the Agent Runtime and execution capabilities.
 
@@ -238,28 +301,30 @@ Initial focus:
 - WorkloadSpec construction;
 - Sandbox Runtime invocation;
 - structured results;
-- auditing.
+- correlated audit events.
 
-## Deliverables
+### Deliverables
 
-- ToolRequest / ToolResult model;
+- `ToolRequest` / `ToolResult`;
 - Tool Gateway;
 - integration with Policy Engine;
 - integration with Sandbox Runtime;
-- structured audit events;
+- request / Workload correlation;
+- structured Audit events;
 - end-to-end tests.
 
-## Acceptance Criteria
+### Acceptance Criteria
 
-- [ ] Agent requests cannot directly invoke unrestricted process execution.
+- [ ] Agent requests cannot directly invoke unrestricted execution through the Tool Gateway path.
 - [ ] Tool Gateway validates incoming requests.
 - [ ] Every protected tool request receives an explicit PolicyDecision.
 - [ ] Denied requests never create a Workload.
-- [ ] Allowed execution requests create a WorkloadSpec.
-- [ ] Sandbox execution respects PolicyDecision constraints.
+- [ ] Allowed execution requests create a validated WorkloadSpec.
+- [ ] Sandbox execution respects PolicyDecision constraints and the Security Baseline.
 - [ ] ToolResult reports execution outcome consistently.
-- [ ] Important allow / deny / execution events are audited.
-- [ ] End-to-end tests cover both allowed and denied tool requests.
+- [ ] Important allow, deny, execution, timeout, and cleanup events are correlated.
+- [ ] Audit output avoids leaking sensitive data.
+- [ ] End-to-end tests cover both allowed and denied requests.
 
 ### MVP Complete When
 
@@ -289,13 +354,13 @@ Audit + Result
 
 ---
 
-# Phase 5 — Network Gateway
+## Phase 5 — Network Gateway
 
-## Goal
+### Goal
 
-Provide controlled outbound network access for AgentGuard and sandboxed Workloads.
+Provide controlled outbound network access for AgentGuard-managed Workloads.
 
-## Scope
+### Scope
 
 Introduce network policy enforcement with a deny-by-default model.
 
@@ -304,14 +369,15 @@ Initial capabilities:
 - controlled egress;
 - destination allow / deny policy;
 - private-network blocking;
+- loopback restrictions;
 - link-local blocking;
 - cloud metadata protection;
-- workload identity propagation;
+- Workload identity propagation;
 - network auditing.
 
 The exact mechanism may use a proxy, network namespaces, or a combination determined during implementation.
 
-## Deliverables
+### Deliverables
 
 - Network Gateway;
 - network policy request/decision model;
@@ -319,27 +385,29 @@ The exact mechanism may use a proxy, network namespaces, or a combination determ
 - Network Gateway audit events;
 - network adversarial tests.
 
-## Acceptance Criteria
+### Acceptance Criteria
 
 - [ ] A Workload with networking disabled has no outbound network access.
 - [ ] A Workload with controlled networking cannot bypass the Network Gateway.
 - [ ] Explicitly allowed destinations are reachable.
 - [ ] Non-allowed destinations are denied.
 - [ ] Private-network access is denied by default.
-- [ ] Link-local / metadata endpoints are denied by default.
+- [ ] Loopback and link-local access are denied by default unless explicitly allowed.
+- [ ] Cloud metadata endpoints are denied by default.
 - [ ] Network decisions are attributable to a Workload identity.
 - [ ] Network enforcement failure never results in unrestricted egress.
 - [ ] Network bypass tests are included.
+- [ ] Network allow / deny events are correlated with the originating Workload.
 
 ---
 
-# Phase 6 — Model Gateway
+## Phase 6 — Model Gateway
 
-## Goal
+### Goal
 
 Mediate Agent access to LLM providers through AgentGuard policy and auditing.
 
-## Scope
+### Scope
 
 Initial capabilities may include:
 
@@ -352,7 +420,7 @@ Initial capabilities may include:
 - usage auditing;
 - optional provider routing.
 
-## Deliverables
+### Deliverables
 
 - Model Gateway;
 - model request/response abstraction;
@@ -362,25 +430,25 @@ Initial capabilities may include:
 - audit events;
 - tests.
 
-## Acceptance Criteria
+### Acceptance Criteria
 
 - [ ] Agent code does not need direct access to provider credentials.
 - [ ] Unauthorized models/providers are denied.
 - [ ] Allowed models/providers can be accessed through the Gateway.
 - [ ] Request limits are enforced.
 - [ ] Sensitive provider credentials are not exposed to Workloads.
-- [ ] Model requests produce structured audit events.
+- [ ] Model requests produce structured, correlated audit events.
 - [ ] Policy failure defaults to deny.
 
 ---
 
-# Phase 7 — Unified Security Control Plane
+## Phase 7 — Unified Security Control Plane
 
-## Goal
+### Goal
 
 Integrate the major AgentGuard enforcement domains into a coherent security control plane.
 
-## Scope
+### Scope
 
 Unify:
 
@@ -395,22 +463,23 @@ Unify:
 
 This phase focuses on coherence rather than adding many new features.
 
-## Deliverables
+### Deliverables
 
-- unified agent identity model;
+- unified Agent identity model;
 - shared policy context;
-- cross-component correlation IDs;
+- cross-component correlation identifiers;
 - unified audit schema;
 - configuration model;
 - end-to-end multi-gateway tests;
-- updated architecture and threat model.
+- updated Architecture and Threat Model.
 
-## Acceptance Criteria
+### Acceptance Criteria
 
 - [ ] Tool, Network, and Model Gateways use the same Agent identity model.
 - [ ] Policy decisions use consistent subject/action/resource/context semantics.
 - [ ] Workload events can be correlated with originating Agent requests.
 - [ ] Network activity can be correlated with the originating Workload.
+- [ ] Model activity can be correlated with the originating Agent request.
 - [ ] Audit records across components use a consistent schema.
 - [ ] No Gateway maintains an independent conflicting global policy model.
 - [ ] End-to-end tests exercise multiple enforcement domains together.
@@ -418,12 +487,13 @@ This phase focuses on coherence rather than adding many new features.
 
 ---
 
-# Post-MVP / Optional Extensions
+## Post-MVP / Optional Extensions
 
 These are intentionally **not part of the core roadmap** until justified by implementation needs.
 
 Possible future work:
 
+- Agent Runtime confinement;
 - gVisor backend;
 - VM / Firecracker backend;
 - remote sandbox workers;
@@ -436,13 +506,14 @@ Possible future work:
 - advanced DLP;
 - distributed policy delivery;
 - external audit sinks;
+- monitoring / detection engine;
 - performance benchmarking.
 
 These should not block the core AgentGuard implementation.
 
 ---
 
-# Roadmap Rule
+## Roadmap Rule
 
 A Phase is complete only when its **Acceptance Criteria are demonstrably satisfied**.
 
@@ -458,4 +529,4 @@ test
 observable result
 ```
 
-If a Phase reveals that the Architecture or Threat Model is wrong, the design documents should be updated before continuing.
+If implementation evidence shows that the Architecture or Threat Model is wrong, the relevant design document should be updated before continuing.

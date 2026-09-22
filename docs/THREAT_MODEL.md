@@ -1,13 +1,16 @@
 # AgentGuard Threat Model
 
-> This document describes the security threats AgentGuard is designed to mitigate.
-> Architecture and component responsibilities are defined in `ARCHITECTURE.md`.
+> This document defines the security threats AgentGuard is designed to mitigate.
+>
+> System structure belongs in `ARCHITECTURE.md`.  
+> Implementation order belongs in `ROADMAP.md`.  
+> Project-wide security rules belong in `DESIGN_PRINCIPLES.md`.
 
 ---
 
 ## 1. Scope
 
-This threat model covers the initial single-host Linux design of AgentGuard.
+This threat model covers the initial **single-host Linux** design of AgentGuard.
 
 The current analysis focuses on:
 
@@ -16,7 +19,9 @@ The current analysis focuses on:
 - host filesystem protection;
 - host resource protection;
 - network egress;
-- credential exposure.
+- credential exposure;
+- policy enforcement;
+- security-relevant auditability.
 
 Model Gateway-specific threats will be expanded when that component is implemented.
 
@@ -24,24 +29,28 @@ Model Gateway-specific threats will be expanded when that component is implement
 
 ## 2. Trust Assumptions
 
-The initial design assumes:
+The initial design assumes that:
 
 - the Linux kernel is trusted;
 - the AgentGuard process is trusted;
 - the host administrator is trusted;
-- policy configuration is controlled by an authorized operator.
+- policy configuration is controlled by an authorized operator;
+- the Agent Runtime integration is trusted to route protected capabilities through AgentGuard rather than intentionally bypassing it.
 
 Agent-controlled inputs are **not trusted**.
 
 This includes:
 
-- shell commands;
+- tool calls;
+- generated commands;
 - generated code;
-- tool arguments;
 - requested file paths;
 - requested network destinations;
 - downloaded dependencies;
-- content influenced by prompt injection.
+- external content that may influence the Agent;
+- Workloads created from Agent requests.
+
+The initial MVP does **not** claim to contain a fully compromised Agent Runtime that intentionally accesses host capabilities outside AgentGuard.
 
 ---
 
@@ -56,63 +65,68 @@ AgentGuard aims to protect:
 - credentials and secrets;
 - internal network services;
 - other Workloads;
-- AgentGuard policy and audit data.
+- policy configuration;
+- audit data.
 
 ---
 
 ## 4. Threat Sources
 
-Threats may come from:
+Unsafe behavior may originate from:
 
 - a malicious Agent;
-- a compromised Agent;
-- prompt-injection-induced behavior;
+- an Agent influenced by prompt injection;
 - incorrect Agent behavior;
 - malicious generated code;
 - malicious third-party dependencies;
+- unsafe tool arguments;
 - unsafe operator configuration.
 
-AgentGuard does not rely on determining whether unsafe behavior was intentional.
+AgentGuard does not depend on correctly determining whether unsafe behavior was intentional.
 
 ---
 
 ## 5. Trust Boundaries
 
-The main trust boundaries are:
+The important boundaries are:
 
 ```text
 Agent Runtime
      |
-=====|========================
+     | untrusted Agent-controlled request
      v
- AgentGuard
+===============================
+         AgentGuard
 ```
 
 ```text
 AgentGuard
     |
-====|=========================
+    | approved execution contract
     v
- Workload
+===============================
+        Workload
 ```
 
 ```text
 Workload
    |
-===|==========================
+   | syscalls / resource use
    v
+===============================
 Linux Kernel / Host Resources
 ```
 
 ```text
 Workload
    |
-===|==========================
+   | controlled egress
    v
+===============================
 Network Gateway
 ```
 
-Inputs crossing these boundaries must be validated and constrained according to policy.
+Inputs crossing these boundaries must be validated, constrained, or isolated according to policy.
 
 ---
 
@@ -132,6 +146,7 @@ A Workload attempts to read or modify host files that were not explicitly expose
 
 **Expected controls**
 
+- filesystem isolation;
 - mount namespace;
 - isolated root filesystem;
 - explicit bind mounts;
@@ -151,9 +166,10 @@ A Workload receives host or AgentGuard credentials through inherited environment
 
 **Expected controls**
 
-- no default host environment inheritance;
+- no default host-environment inheritance;
 - explicit environment allowlist;
-- secret redaction in audit logs.
+- controlled secret injection;
+- audit redaction.
 
 **Required property**
 
@@ -165,7 +181,7 @@ Host secrets are not implicitly available inside a Workload.
 
 **Threat**
 
-A Workload attempts to exhaust host resources.
+A Workload attempts to exhaust shared host resources.
 
 Examples include:
 
@@ -175,8 +191,8 @@ Examples include:
 
 **Expected controls**
 
-- cgroup v2 `memory.max`;
-- cgroup v2 `pids.max`;
+- cgroup v2 memory limits;
+- cgroup v2 process limits;
 - CPU controls;
 - execution timeout.
 
@@ -197,7 +213,7 @@ A Workload attempts to inspect, trace, signal, or interfere with unrelated host 
 - PID namespace;
 - user namespace;
 - reduced Linux capabilities;
-- seccomp where appropriate.
+- syscall restrictions where appropriate.
 
 **Required property**
 
@@ -220,7 +236,7 @@ A Workload invokes unnecessary high-risk system calls.
 **Expected controls**
 
 - seccomp;
-- dropped capabilities;
+- reduced capabilities;
 - `no_new_privs`.
 
 ---
@@ -233,7 +249,7 @@ A child process escapes Workload accounting or survives after the Workload shoul
 
 **Expected controls**
 
-- workload-wide cgroup membership;
+- Workload-wide cgroup membership;
 - process-group management;
 - namespace containment;
 - verified cleanup.
@@ -248,7 +264,7 @@ Every process created for a Workload remains attributable to that Workload for i
 
 **Threat**
 
-A Workload attempts to send sensitive data to an unauthorized external destination.
+A Workload attempts to send sensitive data to an unauthorized destination.
 
 **Expected controls**
 
@@ -271,14 +287,15 @@ A Workload attempts to access:
 - localhost services;
 - private networks;
 - internal APIs;
+- link-local services;
 - cloud metadata endpoints.
 
 **Expected controls**
 
+- network isolation;
 - Network Gateway policy;
 - private-address restrictions;
-- link-local restrictions;
-- no unrestricted host networking.
+- link-local restrictions.
 
 ---
 
@@ -286,7 +303,7 @@ A Workload attempts to access:
 
 **Threat**
 
-A Workload attempts to bypass the Network Gateway or other required network enforcement path.
+A Workload attempts to bypass the Network Gateway or another required network enforcement path.
 
 **Expected controls**
 
@@ -294,23 +311,27 @@ A Workload attempts to bypass the Network Gateway or other required network enfo
 - forced controlled egress;
 - explicit bypass tests.
 
+**Required property**
+
+Controlled networking cannot silently become direct host networking.
+
 ---
 
 ### T10 — Policy Bypass
 
 **Threat**
 
-A protected action reaches a capability without an explicit allow decision.
+A protected capability is reached without an explicit policy decision.
 
 **Expected controls**
 
 - Gateway mediation;
 - deny-by-default behavior;
-- explicit policy decisions.
+- explicit PolicyDecision.
 
 **Required property**
 
-No protected action is implicitly allowed.
+No protected capability is implicitly allowed.
 
 ---
 
@@ -318,7 +339,7 @@ No protected action is implicitly allowed.
 
 **Threat**
 
-A PolicyDecision contains restrictions, but one or more restrictions are lost when creating the WorkloadSpec.
+A PolicyDecision contains restrictions, but one or more restrictions are lost while building the WorkloadSpec.
 
 Example:
 
@@ -334,7 +355,8 @@ WorkloadSpec:
 
 - typed constraint structures;
 - WorkloadSpec validation;
-- policy-to-spec tests.
+- policy-to-spec tests;
+- mandatory Security Baseline checks.
 
 ---
 
@@ -342,7 +364,7 @@ WorkloadSpec:
 
 **Threat**
 
-A required isolation mechanism fails and AgentGuard silently continues with weaker security.
+A required security mechanism fails and AgentGuard silently continues with weaker security.
 
 **Expected controls**
 
@@ -356,7 +378,35 @@ If required protection cannot be established, the Workload does not start.
 
 ---
 
-### T13 — Cross-Workload Interference
+### T13 — Security Baseline Override
+
+**Threat**
+
+Policy, defaults, or request data weakens a mandatory security invariant.
+
+Example:
+
+```text
+Security Baseline:
+    host secrets are not inherited
+
+Request or Policy:
+    inherit all host environment variables
+```
+
+**Expected controls**
+
+- mandatory baseline validation;
+- explicit WorkloadSpec construction order;
+- validation before execution.
+
+**Required property**
+
+Security Baseline requirements cannot be weakened by ordinary policy or request data.
+
+---
+
+### T14 — Cross-Workload Interference
 
 **Threat**
 
@@ -364,48 +414,74 @@ One Workload attempts to inspect or interfere with another Workload.
 
 **Expected controls**
 
-- per-Workload namespaces;
+- per-Workload identity;
 - separate cgroups;
-- isolated filesystem state;
-- per-Workload identity.
+- isolated process visibility;
+- isolated filesystem state.
 
 ---
 
-### T14 — Audit Data Leakage
+### T15 — Audit Data Leakage
 
 **Threat**
 
-Credentials or other sensitive values are written into logs.
+Credentials or other sensitive values are written into security events.
 
 **Expected controls**
 
-- structured audit schemas;
-- redaction;
+- structured audit schema;
 - field allowlists;
+- redaction;
 - avoid raw environment logging.
 
+**Required property**
+
+Audit must not become a secret-exfiltration channel.
+
 ---
 
-### T15 — Prompt-Injection-Induced Unsafe Action
+### T16 — Missing or Uncorrelated Security Events
 
 **Threat**
 
-External content causes an Agent to request an unsafe action.
+A security-relevant action occurs but cannot later be reconstructed because events are missing or lack correlation identifiers.
 
 **Expected controls**
 
-The requested action must still pass through normal AgentGuard enforcement:
+- structured event types;
+- stable request and Workload identifiers;
+- correlation fields;
+- tests for expected security events.
+
+**Required property**
+
+Important security decisions and enforcement outcomes remain observable.
+
+---
+
+### T17 — Prompt-Injection-Induced Unsafe Action
+
+**Threat**
+
+External content causes the Agent to request an unsafe action.
+
+**Expected controls**
+
+The request must still pass through normal AgentGuard enforcement:
 
 ```text
+Agent-controlled request
+        |
+        v
 Policy Engine
-      |
-      v
+        |
+        v
 Gateway
-      |
-      v
+        |
+        v
 Workload / Sandbox
-      |
-      v
+        |
+        v
 Network controls, if applicable
 ```
 
@@ -420,19 +496,21 @@ Security enforcement does not depend on correctly determining the Agent's intent
 | Threat | Primary Controls |
 |---|---|
 | Host filesystem access | Filesystem isolation |
-| Secret inheritance | Environment allowlist |
+| Secret inheritance | Environment allowlist, secret handling |
 | Resource exhaustion | cgroup v2, timeout |
-| Host process interference | PID/user namespaces, capabilities |
+| Host process interference | Namespaces, privilege reduction |
 | Dangerous syscalls | seccomp, `no_new_privs` |
-| Child process escape | cgroup membership, cleanup |
+| Child process escape | cgroup membership, lifecycle cleanup |
 | Network exfiltration | Network Gateway, controlled egress |
-| Internal network access | Network policy |
-| Network bypass | Network isolation |
+| Internal network access | Network isolation and policy |
+| Network bypass | Forced controlled egress |
 | Policy bypass | Gateway mediation |
 | Constraint loss | WorkloadSpec validation |
 | Silent downgrade | Fail closed |
+| Security baseline override | Mandatory baseline validation |
 | Cross-Workload interference | Per-Workload isolation |
-| Audit leakage | Redaction |
+| Audit leakage | Structured schema, redaction |
+| Missing audit correlation | Correlation identifiers |
 | Prompt-injection action | Independent policy and enforcement |
 
 ---
@@ -441,13 +519,14 @@ Security enforcement does not depend on correctly determining the Agent's intent
 
 The initial threat model does not claim protection against:
 
+- a fully compromised Agent Runtime that intentionally bypasses AgentGuard;
 - unknown Linux kernel vulnerabilities that fully escape the sandbox;
 - malicious host root administrators;
 - physical or hardware attacks;
 - firmware compromise;
 - microarchitectural side channels;
 - compromise of the AgentGuard binary itself;
-- complete semantic detection of prompt injection;
+- perfect semantic detection of prompt injection;
 - distributed multi-host threats.
 
 ---
@@ -457,10 +536,11 @@ The initial threat model does not claim protection against:
 Even when all planned controls work correctly:
 
 - the Linux kernel remains part of the trusted computing base;
+- the Agent Runtime integration remains trusted in the initial design;
 - policies may still be too permissive;
 - allowed destinations may be malicious;
 - allowed files may already contain secrets;
-- AgentGuard itself may contain implementation bugs.
+- AgentGuard may contain implementation bugs.
 
 AgentGuard should document these limitations rather than imply perfect isolation.
 
@@ -468,7 +548,7 @@ AgentGuard should document these limitations rather than imply perfect isolation
 
 ## 10. Security Test Mapping
 
-The threat model should be backed by adversarial tests.
+Security claims should be backed by adversarial tests.
 
 Planned categories include:
 
@@ -487,12 +567,14 @@ tests/attacks/
 └── cross_workload_probe/
 ```
 
-Each test should define:
+Each security test should define:
 
 - the attack action;
 - the expected enforcement behavior;
-- the expected audit result;
-- cleanup requirements.
+- the expected structured audit event;
+- the expected cleanup behavior.
+
+The audit event is evidence that the security-relevant outcome was observable, not the enforcement mechanism itself.
 
 ---
 
@@ -500,27 +582,29 @@ Each test should define:
 
 AgentGuard assumes that Agent-controlled behavior may be unsafe, whether intentionally or accidentally.
 
-Its security model is therefore based on independent enforcement rather than trust in Agent intent:
+Its security model is based on independent enforcement:
 
 ```text
-Agent Request
-     |
-     v
+Agent-controlled Request
+        |
+        v
 Policy Decision
-     |
-     v
+        |
+        v
 Gateway Enforcement
-     |
-     v
+        |
+        v
 WorkloadSpec
-     |
-     v
+        |
+        v
 Sandbox Runtime
-     |
-     v
+        |
+        v
 Controlled Workload
 ```
 
-The central principle is:
+The initial design also assumes that the Agent Runtime integration itself does not intentionally bypass AgentGuard.
 
-> **Assume the Agent or its Workload may behave incorrectly or maliciously, and enforce security boundaries independently of that intent.**
+The central threat-model principle is:
+
+> **Assume Agent-controlled requests and Workloads may behave incorrectly or maliciously, and enforce security boundaries independently of their intent.**

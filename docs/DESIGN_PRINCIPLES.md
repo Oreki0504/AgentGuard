@@ -1,15 +1,16 @@
 # AgentGuard Design Principles
 
 > These principles guide implementation decisions across AgentGuard.
-> They are intentionally short and should remain stable even as the architecture evolves.
+>
+> They define stable engineering and security rules, not component architecture or implementation order.
 
 ---
 
 ## 1. Deny by Default
 
-Capabilities are unavailable unless explicitly allowed.
+Protected capabilities are unavailable unless explicitly allowed.
 
-If no rule matches, the result is:
+If no policy rule matches, the result is:
 
 ```text
 DENY
@@ -21,22 +22,23 @@ This applies to:
 - filesystem access;
 - network access;
 - model access;
-- workload capabilities.
+- other protected capabilities.
 
 ---
 
 ## 2. Fail Closed
 
-If a required security mechanism cannot be established, execution must fail.
+If a required security mechanism cannot be established, the protected operation must fail.
 
 Examples:
 
 - cgroup setup fails;
 - namespace setup fails;
+- filesystem isolation fails;
 - seccomp installation fails;
 - controlled network egress cannot be established.
 
-AgentGuard must never silently fall back to weaker or unrestricted execution.
+AgentGuard must never silently fall back to unrestricted execution.
 
 ---
 
@@ -46,10 +48,11 @@ Agents and Workloads receive only the permissions and resources required for the
 
 Examples:
 
-- expose only the required filesystem paths;
+- expose only required filesystem paths;
 - grant only required Linux capabilities;
 - provide only necessary environment variables;
-- allow only required network destinations.
+- allow only required network destinations;
+- enforce bounded resource usage.
 
 ---
 
@@ -59,18 +62,41 @@ The Policy Engine decides **what is allowed**.
 
 Gateways and runtime mechanisms decide **how those decisions are enforced**.
 
-Policy code should not contain low-level Linux enforcement logic such as:
+Policy code must not depend on low-level enforcement details such as:
 
-- cgroup manipulation;
-- namespace setup;
+- cgroup paths;
+- namespace flags;
 - mount operations;
-- seccomp installation.
+- seccomp rules.
 
 ---
 
-## 5. No Silent Security Downgrade
+## 5. Security Baseline Cannot Be Weakened by Defaults or Policy
 
-A security requirement must not become weaker without an explicit decision.
+AgentGuard distinguishes between:
+
+```text
+Runtime Defaults
+    configurable fallback values
+
+Security Baseline
+    mandatory protections
+```
+
+Runtime Defaults may be overridden where allowed.
+
+Security Baseline requirements must not be weakened by:
+
+- request data;
+- ordinary policy;
+- runtime defaults;
+- backend configuration.
+
+---
+
+## 6. No Silent Security Downgrade
+
+A security requirement must never become weaker without an explicit and valid security decision.
 
 For example:
 
@@ -78,30 +104,30 @@ For example:
 network = controlled
 ```
 
-must never silently become:
+must not silently become:
 
 ```text
 network = unrestricted
 ```
 
-If the requested protection cannot be provided, AgentGuard should fail or choose a more restrictive behavior.
+If the required protection cannot be provided, AgentGuard should fail or choose a more restrictive behavior.
 
 ---
 
-## 6. Contain the Entire Workload
+## 7. Contain the Entire Workload
 
-Security and resource controls apply to the complete Workload, not only to its initial process.
+Security, lifecycle, and resource controls apply to the entire Workload, not only to its initial process.
 
 Child processes must remain:
 
 - attributable to the Workload;
 - subject to its resource limits;
-- subject to its lifecycle;
-- subject to its cleanup.
+- subject to its isolation boundaries;
+- subject to its termination and cleanup.
 
 ---
 
-## 7. Do Not Implicitly Inherit Host Secrets
+## 8. Do Not Implicitly Inherit Host Secrets
 
 Workloads must not automatically inherit the host process environment.
 
@@ -112,13 +138,30 @@ Sensitive values such as:
 - SSH credentials;
 - provider tokens;
 
-must be explicitly provided through controlled mechanisms.
+must be introduced through explicit controlled mechanisms.
 
 ---
 
-## 8. Security Claims Must Be Testable
+## 9. Make Important Security State Explicit
 
-A security claim is not considered complete until it can be verified.
+Security-relevant state should be represented explicitly rather than hidden in defaults or side effects.
+
+Examples:
+
+- `PolicyDecision`;
+- `WorkloadSpec`;
+- Workload lifecycle state;
+- network mode;
+- filesystem permissions;
+- correlation identifiers.
+
+Explicit state is easier to validate, test, audit, and reason about.
+
+---
+
+## 10. Security Claims Must Be Testable
+
+A security claim is not complete until it can be verified.
 
 Example:
 
@@ -127,10 +170,10 @@ Claim:
 The Workload cannot read host SSH keys.
 
 Verification:
-Attempt the read from an adversarial test and confirm failure.
+Attempt the access from an adversarial test and confirm that it fails.
 ```
 
-Security features should have:
+Security features should provide:
 
 ```text
 implementation
@@ -142,71 +185,57 @@ observable result
 
 ---
 
-## 9. Security-Relevant Decisions Must Be Observable
+## 11. Security-Relevant Events Must Be Observable
 
-Important security events should produce structured audit information.
+Important security decisions and enforcement outcomes should produce structured, correlated events.
 
 Examples:
 
 - policy allow / deny;
-- workload start / stop;
+- Workload start / stop;
 - timeout;
+- sandbox setup failure;
 - resource-limit violation;
 - blocked network request;
-- sandbox setup failure.
+- cleanup failure.
 
-Audit output must avoid leaking sensitive data.
+Audit provides evidence, debugging, and forensic visibility.
 
----
-
-## 10. Prefer Explicit State and Boundaries
-
-Important security state should be represented explicitly.
-
-Examples:
-
-- WorkloadSpec;
-- PolicyDecision;
-- Workload lifecycle state;
-- network mode;
-- filesystem permissions.
-
-Avoid security behavior that depends on hidden defaults or implicit side effects.
-
----
-
-## 11. Prefer Simple Mechanisms Before Premature Abstraction
-
-Do not introduce complexity before the underlying problem is understood.
-
-Examples:
-
-- do not build a custom policy language before simple structured policies are insufficient;
-- do not add multiple sandbox backends before the Linux backend works reliably;
-- do not introduce distributed execution before single-host execution is correct.
-
-Abstractions should be justified by real implementation needs.
+Audit must not make authorization decisions, and sensitive fields must be omitted or redacted.
 
 ---
 
 ## 12. Security Boundaries Must Not Depend on Agent Intent
 
-AgentGuard should not need to determine whether an Agent is:
+AgentGuard should not need to determine whether Agent-controlled behavior is:
 
 - malicious;
+- accidental;
 - confused;
 - prompt-injected;
-- simply wrong.
+- simply incorrect.
 
-The same policy and enforcement boundaries apply regardless of intent.
+The same security boundaries apply regardless of intent.
 
 ---
 
-## 13. Cleanup Is Part of Security
+## 13. Trust Assumptions Must Be Explicit
 
-A Workload is not finished until its resources are cleaned up.
+AgentGuard must clearly document which components are trusted and which are not.
 
-Cleanup includes, where applicable:
+The initial design trusts the Agent Runtime integration to route protected capabilities through AgentGuard.
+
+Agent-controlled requests and Workloads are not trusted.
+
+If future versions reduce a trust assumption, the architecture and threat model must be updated accordingly.
+
+---
+
+## 14. Cleanup Is Part of Security
+
+A Workload is not complete until its resources are cleaned up.
+
+Cleanup may include:
 
 - remaining processes;
 - cgroups;
@@ -219,17 +248,32 @@ Cleanup failures must be observable.
 
 ---
 
-## 14. Architecture May Evolve, Invariants Should Not Drift Silently
+## 15. Prefer Simple Mechanisms Before Premature Abstraction
+
+Do not introduce complexity before the underlying requirement is understood.
+
+Examples:
+
+- do not build a custom policy language before simple structured policies are insufficient;
+- do not add multiple sandbox backends before the Linux backend works reliably;
+- do not introduce distributed execution before single-host execution is correct.
+
+Abstractions should be justified by real implementation needs.
+
+---
+
+## 16. Architecture May Evolve, Security Invariants Must Not Drift Silently
 
 Implementation experience may justify architecture changes.
 
 When that happens:
 
 1. update the architecture;
-2. update the threat model if necessary;
-3. verify that security invariants still hold.
+2. update the threat model when security assumptions change;
+3. update the roadmap when implementation order changes;
+4. verify that required security properties still hold.
 
-Security behavior must not change accidentally as a side effect of refactoring.
+Refactoring must not silently weaken security behavior.
 
 ---
 
@@ -240,8 +284,10 @@ AgentGuard should prefer:
 ```text
 explicit over implicit
 deny over assume
-fail closed over silent downgrade
+fail closed over silent fallback
 least privilege over convenience
+mandatory baselines over configurable weakening
 testable guarantees over undocumented assumptions
+structured evidence over opaque behavior
 simple mechanisms over premature abstraction
 ```

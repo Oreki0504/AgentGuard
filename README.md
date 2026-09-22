@@ -2,289 +2,209 @@
 
 > A security control plane for AI agents.
 
-**AgentGuard** is a security infrastructure project for controlling how AI agents interact with external capabilities such as models, local tools, filesystems, and networks.
+**AgentGuard** is a Go-based security infrastructure project for controlling how AI agents access local tools, untrusted workloads, networks, and model providers.
 
-Instead of trusting an agent runtime to enforce its own restrictions, AgentGuard introduces explicit security boundaries between the agent and the resources it can access.
+The project separates **security policy** from **enforcement** so that agent-controlled actions can be evaluated, constrained, isolated, and audited before they reach sensitive host capabilities.
 
-> **Status:** Early design and development.  
-> The project is currently in **Phase 0 — Architecture & Threat Modeling**.
+> **Status:** Early development.  
+> Current phase: **Phase 0 — Design Baseline**
 
 ---
 
 ## Why AgentGuard?
 
-Modern AI agents can do much more than generate text.
+AI agents may be able to:
 
-A coding or automation agent may be able to:
+- execute commands;
+- read or modify files;
+- run generated code;
+- access external APIs;
+- connect to internal services;
+- call LLM providers.
 
-- execute shell commands;
-- read and modify files;
-- invoke external tools;
-- access LLM providers;
-- make outbound network requests;
-- interact with APIs and internal services.
+Agent-controlled behavior may be incorrect, compromised, or influenced by untrusted external content.
 
-This significantly expands the security boundary of an AI application.
-
-For example, an untrusted or compromised agent could attempt to:
-
-- read sensitive host files;
-- exfiltrate credentials or source code;
-- consume excessive CPU or memory;
-- spawn large numbers of processes;
-- interfere with other processes;
-- access internal network services;
-- invoke unauthorized tools;
-- send sensitive information to external model providers.
-
-AgentGuard aims to reduce these risks by placing security enforcement points between the agent runtime and the capabilities it uses.
+AgentGuard is designed to place explicit security boundaries between those requests and the capabilities they use.
 
 ---
 
 ## Architecture
 
-The planned architecture consists of a shared policy and auditing layer with dedicated gateways for different capability classes.
+AgentGuard is organized around a **Control Plane** and an **Enforcement Plane**.
 
 ```text
-                         Agent Runtime
-                              |
-                              v
-                    +-------------------+
-                    |    AgentGuard     |
-                    +-------------------+
-                              |
-                       Policy Engine
-                              |
-               +--------------+--------------+
-               |              |              |
-               v              v              v
-            Model           Tool          Network
-           Gateway         Gateway         Gateway
-               |              |              |
-               v              v              v
-          LLM Providers     Sandbox        Internet
-                            Filesystem       APIs
-                            Shell
+                     CONTROL PLANE
+
+                    Policy Engine
+                         |
+                 security decisions
+                         |
+       +-----------------+-----------------+
+       |                 |                 |
+       v                 v                 v
+ Model Gateway      Tool Gateway      Network Gateway
+                         |
+                         v
+                    WorkloadSpec
+                         |
+                         v
+                   Sandbox Runtime
+                         |
+                         v
+                      Workload
+                         |
+                  controlled egress
+                         |
+                         v
+                  Network Gateway
 ```
 
 ### Policy Engine
 
-The **Policy Engine** makes authorization decisions for operations passing through AgentGuard.
+Defines **what is allowed** and under which constraints.
 
-Policies may eventually define rules such as:
+Examples:
 
-- which models an agent may access;
-- which tools it may invoke;
-- which filesystem paths are visible;
-- which network destinations are allowed;
-- execution time and resource limits.
+- tool permissions;
+- execution timeout;
+- memory and process limits;
+- filesystem access;
+- network mode;
+- model/provider access.
 
-Policy decisions are intentionally separated from the mechanisms used to enforce them.
+### Gateways
 
-### Tool Gateway
+Gateways are capability-level enforcement points.
 
-The **Tool Gateway** mediates access to capabilities such as:
+- **Tool Gateway** — mediates shell, command, filesystem, and local tool access.
+- **Network Gateway** — controls outbound network access.
+- **Model Gateway** — controls access to LLM providers.
 
-- shell execution;
-- filesystem operations;
-- local tools;
-- future agent tool integrations.
+### Workload
 
-Untrusted process execution will be delegated to an isolated Linux sandbox.
+A **Workload** is a uniquely identifiable, policy-constrained execution unit.
 
-The sandbox is planned to use mechanisms such as:
+A Workload may contain an entire process tree rather than a single process.
 
-- Linux namespaces;
+### WorkloadSpec
+
+A **WorkloadSpec** is the execution contract passed to the Sandbox Runtime.
+
+It is derived from the request, policy decision, runtime defaults, and mandatory security requirements.
+
+### Sandbox Runtime
+
+The Sandbox Runtime translates a WorkloadSpec into operating-system-level enforcement.
+
+The initial Linux backend will use mechanisms such as:
+
+- namespaces;
 - cgroup v2;
 - filesystem isolation;
 - seccomp;
-- Linux capabilities;
-- process and execution time limits.
-
-The sandbox is one component of AgentGuard rather than the complete security boundary.
-
-### Network Gateway
-
-The **Network Gateway** is intended to control outbound network access from agents and sandboxed workloads.
-
-Planned capabilities include:
-
-- default-deny egress policies;
-- domain and IP allowlists;
-- private-network restrictions;
-- protection against access to sensitive link-local and metadata services;
-- network activity auditing.
-
-### Model Gateway
-
-The **Model Gateway** is intended to mediate requests from agents to LLM providers.
-
-Potential controls include:
-
-- model allowlists;
-- provider routing;
-- request limits;
-- secret detection;
-- request auditing;
-- usage and cost controls.
-
-### Audit System
-
-Security-sensitive actions should generate structured audit events.
-
-Examples include:
-
-- tool invocation;
-- policy decisions;
-- sandbox execution results;
-- denied operations;
-- resource-limit violations;
-- outbound network requests;
-- model requests.
-
-The goal is to make security decisions observable and explainable rather than silently enforced.
+- Linux capability reduction;
+- `no_new_privs`;
+- process-tree cleanup.
 
 ---
 
-## Security Model
+## Trust Model
 
-AgentGuard follows several core principles.
+The initial single-host design assumes that the **Agent Runtime integration itself is trusted to route protected capabilities through AgentGuard**.
 
-### Secure by Default
+Agent-controlled inputs are not trusted, including:
 
-Capabilities should be denied unless they are explicitly allowed by policy.
+- tool calls;
+- generated code;
+- command arguments;
+- requested paths;
+- external content;
+- downloaded dependencies;
+- Workloads.
 
-### Least Privilege
+Protecting against a fully compromised Agent Runtime that intentionally bypasses AgentGuard is outside the initial MVP and may be addressed by future runtime-confinement work.
 
-Agents should receive only the permissions and resources required to complete their tasks.
-
-### Defense in Depth
-
-No single isolation mechanism is treated as a complete security boundary.
-
-Process isolation, filesystem isolation, resource control, syscall filtering, policy enforcement, and auditing are intended to work together.
-
-### Policy and Enforcement Separation
-
-The policy layer determines **what should be allowed**.
-
-Enforcement components determine **how those decisions are enforced**.
-
-### Verifiable Security Properties
-
-Security claims should be backed by tests.
-
-For example, if AgentGuard claims that a sandbox cannot access host files, the project should contain tests that attempt that access and verify that it fails.
+See [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) for the detailed threat model.
 
 ---
 
 ## Initial MVP
 
-The first AgentGuard MVP will focus on securing local tool execution.
+The first complete MVP focuses on secure local tool execution:
 
 ```text
-                 Agent
-                   |
-                   v
-              Tool Gateway
-                   |
-                   v
-              Policy Engine
-                   |
-                allow?
-                   |
-                   v
-                Sandbox
-              /    |    \
-             /     |     \
-      Namespace  cgroup  seccomp
-             \     |     /
-              Filesystem
-                   |
-                   v
-                 Audit
+Agent Request
+     |
+     v
+Tool Gateway
+     |
+     v
+Policy Engine
+     |
+     v
+WorkloadSpec
+     |
+     v
+Sandbox Runtime
+     |
+     v
+Controlled Workload
+     |
+     v
+Audit + Result
 ```
 
 The MVP will include:
 
-- controlled process execution;
-- execution timeout and cancellation;
-- structured execution results;
-- Linux process isolation;
+- reliable process execution;
+- timeout and cancellation;
+- Workload lifecycle management;
+- Linux isolation;
+- resource limits;
 - filesystem isolation;
-- cgroup v2 resource limits;
-- seccomp syscall restrictions;
-- basic policy evaluation;
-- structured audit logging;
-- security-focused integration tests.
+- syscall restrictions;
+- explicit policy evaluation;
+- structured audit events;
+- adversarial security tests.
 
-The Model Gateway and Network Gateway are planned for later development phases.
+Network Gateway and Model Gateway are later phases.
+
+---
+
+## Security Principles
+
+AgentGuard follows a small set of project-wide rules:
+
+- deny by default;
+- fail closed;
+- least privilege;
+- separate policy from enforcement;
+- never silently downgrade security;
+- constrain the entire Workload;
+- do not implicitly inherit host secrets;
+- make security claims testable;
+- make security-relevant decisions observable.
+
+See [`docs/DESIGN_PRINCIPLES.md`](docs/DESIGN_PRINCIPLES.md).
 
 ---
 
 ## Roadmap
 
-AgentGuard will be developed incrementally.
+Development is incremental:
 
-### Phase 0 — Architecture & Threat Modeling
+```text
+Phase 0   Design Baseline
+Phase 1   Execution Core
+Phase 2   Workload + Linux Sandbox
+Phase 3   Policy Engine
+Phase 4   Tool Gateway              <- First MVP
+Phase 5   Network Gateway
+Phase 6   Model Gateway
+Phase 7   Unified Security Control Plane
+```
 
-- define project scope;
-- define architecture;
-- define threat model;
-- define security principles;
-- define MVP and non-goals.
-
-### Phase 1 — Execution Core
-
-Build a reliable process execution layer with:
-
-- command execution;
-- argument handling;
-- working-directory control;
-- stdout and stderr capture;
-- exit-code reporting;
-- timeout and cancellation;
-- structured results.
-
-### Phase 2 — Linux Sandbox
-
-Introduce operating-system-level isolation:
-
-- Linux namespaces;
-- cgroup v2;
-- filesystem isolation;
-- resource limits;
-- seccomp;
-- sandbox security tests.
-
-### Phase 3 — Policy Engine
-
-Move security configuration out of implementation code and into explicit policies.
-
-### Phase 4 — Tool Gateway
-
-Expose controlled tool execution through a security enforcement layer.
-
-This phase represents the first complete AgentGuard MVP.
-
-### Phase 5 — Network Gateway
-
-Add outbound network policy and auditing.
-
-### Phase 6 — Model Gateway
-
-Add security controls for model-provider access.
-
-### Phase 7 — Unified Security Control Plane
-
-Integrate the gateways around shared:
-
-- identity;
-- policy;
-- configuration;
-- auditing.
-
-More detailed planning will be maintained in `docs/ROADMAP.md`.
+Detailed milestones and acceptance criteria are maintained in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 
@@ -292,45 +212,23 @@ More detailed planning will be maintained in `docs/ROADMAP.md`.
 
 AgentGuard is not intended to be:
 
-- a replacement for Docker;
+- a Docker replacement;
 - a general-purpose container runtime;
 - a Kubernetes platform;
 - an AI agent framework;
+- an MCP framework;
 - an antivirus or EDR product;
 - a general-purpose firewall;
-- a guarantee that arbitrary untrusted code is safe.
-
-AgentGuard instead focuses on reducing the impact of untrusted or compromised AI-agent behavior under a clearly defined threat model.
+- a guarantee that arbitrary untrusted code is perfectly safe.
 
 ---
 
-## Project Structure
+## Documentation
 
-The project is currently in the design phase.
-
-The expected structure will evolve approximately as follows:
-
-```text
-AgentGuard/
-├── cmd/
-│   └── agentguard/
-├── internal/
-│   ├── runner/
-│   ├── sandbox/
-│   ├── policy/
-│   ├── gateway/
-│   └── audit/
-├── docs/
-│   ├── ARCHITECTURE.md
-│   ├── THREAT_MODEL.md
-│   ├── ROADMAP.md
-│   └── DESIGN_PRINCIPLES.md
-├── tests/
-├── go.mod
-└── README.md
-```
-
-Directories will be introduced only when their corresponding functionality is implemented.
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — component boundaries and system design
+- [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) — threats, trust assumptions, and expected controls
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — implementation order and acceptance criteria
+- [`docs/DESIGN_PRINCIPLES.md`](docs/DESIGN_PRINCIPLES.md) — project-wide engineering and security principles
 
 ---
 
@@ -338,19 +236,12 @@ Directories will be introduced only when their corresponding functionality is im
 
 AgentGuard is implemented in **Go** and primarily targets **Linux**.
 
-Linux-specific security mechanisms will form the foundation of the execution sandbox.
+The first sandbox backend will use Linux security mechanisms directly.
 
 ---
 
 ## Development Status
 
-AgentGuard is currently under active development.
-
-Current phase:
-
-```text
-Phase 0
-Architecture & Threat Modeling
-```
+AgentGuard is currently in **Phase 0 — Design Baseline**.
 
 No production-ready security guarantees are currently provided.
