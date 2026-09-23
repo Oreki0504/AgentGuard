@@ -242,6 +242,6 @@ The first sandbox backend will use Linux security mechanisms directly.
 
 ## Development Status
 
-AgentGuard is currently in **Phase 0 — Design Baseline**.
+AgentGuard is currently in **Phase 1   Execution Core**.
 
 No production-ready security guarantees are currently provided.

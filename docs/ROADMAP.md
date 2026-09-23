@@ -89,11 +89,11 @@ agentguard run -- python3 main.py
 
 ### Acceptance Criteria
 
-- [ ] A normal command executes successfully.
-- [ ] Command arguments are passed correctly.
-- [ ] stdout and stderr are captured separately.
-- [ ] Non-zero exit codes are reported correctly.
-- [ ] Working directory can be controlled.
+- [x] A normal command executes successfully.
+- [x] Command arguments are passed correctly.
+- [x] stdout and stderr are captured separately.
+- [x] Non-zero exit codes are reported correctly.
+- [x] Working directory can be controlled.
 - [ ] Host environment variables are not blindly inherited.
 - [ ] A configured timeout terminates execution.
 - [ ] Child processes do not remain alive after timeout or cancellation.
