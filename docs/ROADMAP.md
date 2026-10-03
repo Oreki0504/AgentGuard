@@ -94,10 +94,10 @@ agentguard run -- python3 main.py
 - [x] stdout and stderr are captured separately.
 - [x] Non-zero exit codes are reported correctly.
 - [x] Working directory can be controlled.
-- [ ] Host environment variables are not blindly inherited.
-- [ ] A configured timeout terminates execution.
-- [ ] Child processes do not remain alive after timeout or cancellation.
-- [ ] Tests cover success, failure, timeout, and cancellation paths.
+- [x] Host environment variables are not blindly inherited.
+- [x] A configured timeout terminates execution.
+- [x] Child processes do not remain alive after timeout or cancellation.
+- [x] Tests cover success, failure, timeout, and cancellation paths.
 
 ---
 
