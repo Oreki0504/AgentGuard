@@ -235,7 +235,16 @@ func (r *Runtime) Run(
 
 	cleaningErr := w.Transition(workload.StateCleaning)
 
-	if cleaningErr == nil {
+	if cleaningErr != nil {
+		failed = true
+		errs = append(
+			errs,
+			fmt.Errorf(
+				"transition workload to cleaning: %w",
+				cleaningErr,
+			),
+		)
+	} else {
 		r.record(
 			audit.EventCleanupStarted,
 			w.ID(),
