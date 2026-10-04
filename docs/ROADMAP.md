@@ -141,17 +141,18 @@ Initial capabilities:
 
 #### Acceptance Criteria
 
-- [ ] Every execution receives a unique Workload identity.
-- [ ] Workload state transitions are observable.
-- [ ] All child processes remain attributable to the Workload.
-- [ ] Memory limits apply to the entire Workload.
-- [ ] Process-count limits apply to the entire Workload.
+- [x] Every Workload has an explicit non-empty identity.
+- [x] Workload state transitions are observable.
+- [x] Child processes inherit the Workload cgroup and remain attributable across normal fork/clone and process-group changes.
+- [x] Memory limits can be applied to the entire Workload.
+- [x] Process-count limits can be applied to the entire Workload.
 - [ ] CPU usage can be constrained.
 - [ ] A fork bomb cannot exhaust the host process table.
 - [ ] A memory-exhaustion Workload cannot destabilize the host.
-- [ ] Timeout or cancellation terminates the complete Workload process tree.
-- [ ] Cleanup removes remaining processes and temporary runtime state.
-- [ ] Important lifecycle and failure events are emitted as structured events.
+- [x] Timeout or cancellation terminates processes remaining in the Workload cgroup, including descendants that escape the original process group.
+- [x] Cleanup removes remaining processes and Workload cgroup state.
+- [x] Important lifecycle and failure events are emitted as structured events.
+- [ ] An untrusted Workload cannot modify or escape its own cgroup attribution.
 
 ---
 

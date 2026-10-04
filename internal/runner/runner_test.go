@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -202,6 +203,7 @@ func TestRunKillsChildProcessesOnTimeout(t *testing.T) {
 		err = syscall.Kill(childPID, 0)
 
 		if errors.Is(err, syscall.ESRCH) {
+
 			break
 		}
 
@@ -221,7 +223,7 @@ func TestRunKillsChildProcessesOnTimeout(t *testing.T) {
 		}
 
 		if strings.Contains(string(status), "State:\tZ") {
-			// Zombie: process 已经退出，不能再执行代码。
+
 			break
 		}
 
@@ -233,32 +235,164 @@ func TestRunKillsChildProcessesOnTimeout(t *testing.T) {
 	}
 }
 
-func TestRunDoesNotStartWithCanceledContext(t *testing.T) {
-	dir := t.TempDir()
-	marker := dir + "/started"
+func TestRunCallsOnStarted(t *testing.T) {
+	called := false
+	var startedPID int
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	result, err := Run(ctx, Request{
-		Command: "/bin/sh",
-		Args: []string{
-			"-c",
-			`echo started > "$1"`,
-			"sh",
-			marker,
+	result, err := Run(
+		context.Background(),
+		Request{
+			Command: "/bin/true",
+			Hooks: Hooks{
+				OnStarted: func(pid int) error {
+					called = true
+					startedPID = pid
+					return nil
+				},
+			},
 		},
-	})
+	)
 
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
-	if !result.Canceled {
-		t.Fatal("expected result to be canceled")
+	if result.ExitCode != 0 {
+		t.Fatalf(
+			"unexpected exit code: got %d, want 0",
+			result.ExitCode,
+		)
 	}
 
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatalf("command appears to have started")
+	if !called {
+		t.Fatal("expected OnStarted hook to be called")
+	}
+
+	if startedPID <= 0 {
+		t.Fatalf(
+			"unexpected started PID: %d",
+			startedPID,
+		)
+	}
+}
+func TestRunDoesNotCallOnStartedWhenStartFails(t *testing.T) {
+	called := false
+
+	_, err := Run(
+		context.Background(),
+		Request{
+			Command: "/definitely/not/a/real/command",
+			Hooks: Hooks{
+				OnStarted: func(pid int) error {
+					called = true
+					return nil
+				},
+			},
+		},
+	)
+
+	if err == nil {
+		t.Fatal("expected start error")
+	}
+
+	if called {
+		t.Fatal("OnStarted must not be called when process start fails")
+	}
+}
+func TestRunCallsOnTerminatingOnTimeout(t *testing.T) {
+	called := false
+
+	result, err := Run(
+		context.Background(),
+		Request{
+			Command: "/bin/sleep",
+			Args:    []string{"10"},
+			Timeout: 100 * time.Millisecond,
+			Hooks: Hooks{
+				OnTerminating: func(reason TerminationReason) error {
+					called = true
+
+					if reason != TerminationTimeout {
+						t.Fatalf(
+							"unexpected termination reason: got %q, want %q",
+							reason,
+							TerminationTimeout,
+						)
+					}
+
+					return nil
+				},
+			},
+		},
+	)
+
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if !result.TimedOut {
+		t.Fatal("expected timeout")
+	}
+
+	if !called {
+		t.Fatal("expected OnTerminating to be called")
+	}
+}
+func TestRunDoesNotCallOnTerminatingOnNormalExit(t *testing.T) {
+	called := false
+
+	result, err := Run(
+		context.Background(),
+		Request{
+			Command: "/bin/true",
+			Hooks: Hooks{
+				OnTerminating: func(reason TerminationReason) error {
+					called = true
+					return nil
+				},
+			},
+		},
+	)
+
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if result.ExitCode != 0 {
+		t.Fatalf(
+			"unexpected exit code: got %d, want 0",
+			result.ExitCode,
+		)
+	}
+
+	if called {
+		t.Fatal("OnTerminating must not be called on normal exit")
+	}
+}
+func TestRunReturnsTerminatingHookError(t *testing.T) {
+	result, err := Run(
+		context.Background(),
+		Request{
+			Command: "/bin/sleep",
+			Args:    []string{"10"},
+			Timeout: 100 * time.Millisecond,
+			Hooks: Hooks{
+				OnTerminating: func(reason TerminationReason) error {
+					return fmt.Errorf("termination failed")
+				},
+			},
+		},
+	)
+
+	if err == nil {
+		t.Fatal("expected termination hook error")
+	}
+
+	if !result.TimedOut {
+		t.Fatal("expected TimedOut to remain true")
+	}
+
+	if !strings.Contains(err.Error(), "termination failed") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

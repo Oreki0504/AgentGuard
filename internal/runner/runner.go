@@ -4,10 +4,21 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
 	"syscall"
 	"time"
 )
+
+type LinuxOptions struct {
+	UseCgroupFD bool
+	CgroupFD    int
+}
+
+type Hooks struct {
+	OnStarted     func(pid int) error
+	OnTerminating func(reason TerminationReason) error
+}
 
 type Request struct {
 	Command    string
@@ -15,6 +26,9 @@ type Request struct {
 	WorkingDir string
 	Env        []string
 	Timeout    time.Duration
+
+	Linux LinuxOptions
+	Hooks Hooks
 }
 
 type Result struct {
@@ -25,6 +39,13 @@ type Result struct {
 	TimedOut bool
 	Canceled bool
 }
+
+type TerminationReason string
+
+const (
+	TerminationTimeout  TerminationReason = "timeout"
+	TerminationCanceled TerminationReason = "canceled"
+)
 
 func Run(ctx context.Context, req Request) (Result, error) {
 	if req.Timeout > 0 {
@@ -52,9 +73,18 @@ func Run(ctx context.Context, req Request) (Result, error) {
 
 	cmd := exec.Command(req.Command, req.Args...)
 
-	cmd.SysProcAttr = &syscall.SysProcAttr{
+	cmd.WaitDelay = 500 * time.Millisecond
+
+	sysProcAttr := &syscall.SysProcAttr{
 		Setpgid: true,
 	}
+
+	if req.Linux.UseCgroupFD {
+		sysProcAttr.UseCgroupFD = true
+		sysProcAttr.CgroupFD = req.Linux.CgroupFD
+	}
+
+	cmd.SysProcAttr = sysProcAttr
 
 	if req.WorkingDir != "" {
 		cmd.Dir = req.WorkingDir
@@ -79,16 +109,51 @@ func Run(ctx context.Context, req Request) (Result, error) {
 		}, err
 	}
 
+	if req.Hooks.OnStarted != nil {
+		if err := req.Hooks.OnStarted(cmd.Process.Pid); err != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+
+			// The direct child must always be reaped.
+			_ = cmd.Wait()
+
+			return Result{
+				Stdout:   stdout.String(),
+				Stderr:   stderr.String(),
+				ExitCode: -1,
+				Duration: time.Since(start),
+			}, fmt.Errorf("runner on-start hook failed: %w", err)
+		}
+	}
+
 	waitCh := make(chan error, 1)
 
 	go func() {
 		waitCh <- cmd.Wait()
 	}()
+
+	var terminatingErr error
+
 	select {
 	case err = <-waitCh:
+		// Process exited on its own.
 
 	case <-ctx.Done():
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		var reason TerminationReason
+
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			reason = TerminationTimeout
+		} else {
+			reason = TerminationCanceled
+		}
+
+		if req.Hooks.OnTerminating != nil {
+			terminatingErr = req.Hooks.OnTerminating(reason)
+		}
+
+		_ = syscall.Kill(
+			-cmd.Process.Pid,
+			syscall.SIGKILL,
+		)
 
 		err = <-waitCh
 	}
@@ -108,11 +173,27 @@ func Run(ctx context.Context, req Request) (Result, error) {
 
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		result.TimedOut = true
+
+		if terminatingErr != nil {
+			return result, fmt.Errorf(
+				"runner on-terminating hook failed: %w",
+				terminatingErr,
+			)
+		}
+
 		return result, nil
 	}
 
 	if errors.Is(ctx.Err(), context.Canceled) {
 		result.Canceled = true
+
+		if terminatingErr != nil {
+			return result, fmt.Errorf(
+				"runner on-terminating hook failed: %w",
+				terminatingErr,
+			)
+		}
+
 		return result, nil
 	}
 
