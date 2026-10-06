@@ -16,8 +16,9 @@ type Spec struct {
 }
 
 type ResourceSpec struct {
-	MemoryBytes  int64
-	MaxProcesses int
+	MemoryBytes   int64
+	MaxProcesses  int
+	CPUMilliCores int
 }
 
 func (s Spec) Validate() error {
@@ -32,6 +33,9 @@ func (s Spec) Validate() error {
 	}
 	if s.Resources.MaxProcesses < 0 {
 		return fmt.Errorf("process limit must not be negative")
+	}
+	if s.Resources.CPUMilliCores < 0 {
+		return fmt.Errorf("CPU limit must not be negative")
 	}
 	return nil
 }

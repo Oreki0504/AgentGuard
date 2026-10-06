@@ -396,3 +396,46 @@ func TestRunReturnsTerminatingHookError(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestRunCallsOnTerminatingOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var gotReason TerminationReason
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+
+	result, err := Run(
+		ctx,
+		Request{
+			Command: "/bin/sleep",
+			Args:    []string{"10"},
+			Hooks: Hooks{
+				OnTerminating: func(
+					reason TerminationReason,
+				) error {
+					gotReason = reason
+					return nil
+				},
+			},
+		},
+	)
+
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if !result.Canceled {
+		t.Fatal("expected command to be canceled")
+	}
+
+	if gotReason != TerminationCanceled {
+		t.Fatalf(
+			"unexpected termination reason: got %q, want %q",
+			gotReason,
+			TerminationCanceled,
+		)
+	}
+}

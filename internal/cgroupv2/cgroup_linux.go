@@ -12,6 +12,8 @@ import (
 	"github.com/Oreki0504/AgentGuard/internal/workload"
 )
 
+const cpuPeriodMicros int64 = 100_000
+
 type Group struct {
 	path string
 }
@@ -50,6 +52,13 @@ func Create(
 		); err != nil {
 			return nil, fmt.Errorf("set memory limit: %w", err)
 		}
+
+		if err := writeControl(
+			filepath.Join(path, "memory.swap.max"),
+			"0",
+		); err != nil {
+			return nil, fmt.Errorf("disable workload swap: %w", err)
+		}
 	}
 
 	if resources.MaxProcesses > 0 {
@@ -58,6 +67,20 @@ func Create(
 			strconv.Itoa(resources.MaxProcesses),
 		); err != nil {
 			return nil, fmt.Errorf("set process limit: %w", err)
+		}
+	}
+
+	if resources.CPUMilliCores > 0 {
+		cpuMax, err := cpuMaxValue(resources.CPUMilliCores)
+		if err != nil {
+			return nil, fmt.Errorf("set CPU limit: %w", err)
+		}
+
+		if err := writeControl(
+			filepath.Join(path, "cpu.max"),
+			cpuMax,
+		); err != nil {
+			return nil, fmt.Errorf("set CPU limit: %w", err)
 		}
 	}
 
@@ -208,4 +231,28 @@ func readPopulated(path string) (bool, error) {
 	}
 
 	return false, fmt.Errorf("populated field not found")
+}
+
+func cpuMaxValue(milliCores int) (string, error) {
+	if milliCores <= 0 {
+		return "", fmt.Errorf(
+			"CPU millicores must be positive",
+		)
+	}
+
+	quotaMicros :=
+		int64(milliCores) * cpuPeriodMicros / 1000
+
+	if quotaMicros < 1000 {
+		return "", fmt.Errorf(
+			"CPU limit %d millicores is too small",
+			milliCores,
+		)
+	}
+
+	return fmt.Sprintf(
+		"%d %d",
+		quotaMicros,
+		cpuPeriodMicros,
+	), nil
 }

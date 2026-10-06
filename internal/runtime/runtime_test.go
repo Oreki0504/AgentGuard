@@ -126,8 +126,9 @@ func TestRuntimeRunFinishesWorkload(t *testing.T) {
 	spec := workload.Spec{
 		Command: "/bin/true",
 		Resources: workload.ResourceSpec{
-			MemoryBytes:  64 * 1024 * 1024,
-			MaxProcesses: 16,
+			MemoryBytes:   64 * 1024 * 1024,
+			MaxProcesses:  16,
+			CPUMilliCores: 500,
 		},
 	}
 
@@ -192,6 +193,17 @@ func TestRuntimeRunFinishesWorkload(t *testing.T) {
 
 	if !backend.created {
 		t.Fatal("expected cgroup to be created")
+	}
+
+	if !reflect.DeepEqual(
+		backend.resources,
+		spec.Resources,
+	) {
+		t.Fatalf(
+			"unexpected resources passed to cgroup backend:\ngot:  %+v\nwant: %+v",
+			backend.resources,
+			spec.Resources,
+		)
 	}
 
 	if !group.killCalled {
@@ -783,5 +795,62 @@ func TestRuntimeRecordsTimeoutLifecycleEvents(t *testing.T) {
 			got,
 			want,
 		)
+	}
+}
+
+func TestRuntimeReportsCleaningTransitionFailure(t *testing.T) {
+	w, err := workload.New(
+		"cleaning-transition-failure",
+		workload.Spec{
+			Command: "/bin/true",
+		},
+	)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	rt, _, group := newTestRuntime(
+		func(
+			ctx context.Context,
+			req runner.Request,
+		) (runner.Result, error) {
+			if err := req.Hooks.OnStarted(1234); err != nil {
+				return runner.Result{}, err
+			}
+
+			// Simulate an unexpected lifecycle change before
+			// Runtime performs its own cleanup transition.
+			if err := w.Transition(workload.StateCleaning); err != nil {
+				return runner.Result{}, err
+			}
+
+			return runner.Result{
+				ExitCode: 0,
+			}, nil
+		},
+	)
+
+	_, err = rt.Run(context.Background(), w)
+	if err == nil {
+		t.Fatal("expected cleaning transition error")
+	}
+
+	if !strings.Contains(
+		err.Error(),
+		"transition workload to cleaning",
+	) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !group.killCalled {
+		t.Fatal("expected cgroup cleanup despite transition failure")
+	}
+
+	if !group.waitEmptyCalled {
+		t.Fatal("expected WaitEmpty despite transition failure")
+	}
+
+	if !group.removeCalled {
+		t.Fatal("expected cgroup removal despite transition failure")
 	}
 }

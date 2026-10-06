@@ -163,15 +163,15 @@ func (r *Runtime) Run(
 						err,
 					),
 				)
+			} else {
+				r.record(
+					audit.EventWorkloadTerminating,
+					w.ID(),
+					0,
+					string(reason),
+				)
 			}
 		}
-
-		r.record(
-			audit.EventWorkloadTerminating,
-			w.ID(),
-			0,
-			string(reason),
-		)
 
 		if err := group.Kill(); err != nil {
 			errs = append(

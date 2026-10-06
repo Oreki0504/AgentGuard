@@ -7,7 +7,7 @@
 The project separates **security policy** from **enforcement** so that agent-controlled actions can be evaluated, constrained, isolated, and audited before they reach sensitive host capabilities.
 
 > **Status:** Early development.  
-> Current phase: **Phase 2A — Workload Lifecycle + Resource Control**
+> Current phase: **Phase 2B — Namespace + Filesystem Isolation**
 
 ---
 
@@ -242,6 +242,6 @@ The first sandbox backend will use Linux security mechanisms directly.
 
 ## Development Status
 
-AgentGuard is currently in **Phase 1   Execution Core**.
+AgentGuard is currently in **Phase 2B — Namespace + Filesystem Isolation**.
 
 No production-ready security guarantees are currently provided.
