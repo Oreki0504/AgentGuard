@@ -158,6 +158,8 @@ Initial capabilities:
 
 ### Phase 2B — Namespace + Filesystem Isolation
 
+Implementation/refactor plan: [Phase 2B — Linux Sandbox Implementation Plan](PHASE_2B_IMPLEMENTATION.md). This plan records experimental evidence separately from the acceptance criteria below.
+
 #### Scope
 
 Introduce process-visibility and filesystem boundaries.
