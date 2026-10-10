@@ -246,6 +246,14 @@ Cleanup may include:
 
 Cleanup failures must be observable.
 
+### Runtime-Owned Cleanup
+
+The Sandbox Runtime must create or explicitly take ownership of Workload resource allocations, including temporary rootfs directories, and retain the information needed to clean them up. A Launcher that can be killed along with its Workload must not be the sole party responsible for final cleanup.
+
+Cleanup must first terminate remaining Workload processes and wait for them to leave the Workload cgroup. Mounts must be safely detached or released before their backing directories are removed. Cleanup must use an independent, bounded context so that Workload timeout or cancellation does not cancel cleanup itself. Incomplete cleanup must be reported, not silently ignored.
+
+Cleanup targets must be derived from Runtime-owned allocation records, not inferred by parsing Workload stdout/stderr or by scanning broad filesystem path patterns. The Runtime may remove only the resources it can positively attribute to that Workload.
+
 ---
 
 ## 15. Prefer Simple Mechanisms Before Premature Abstraction
