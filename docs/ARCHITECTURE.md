@@ -602,6 +602,50 @@ Likely mechanisms include:
 
 The exact mechanism set will be refined through implementation and testing.
 
+### Current Phase 2B implementation
+
+`runtime.Config.Sandbox` explicitly selects the Linux backend. The existing
+direct execution path remains available when that configuration is absent.
+Only trusted Runtime configuration selects the installed root-owned launcher
+and authorizes host file/directory exposures; these Linux details are not
+fields in `workload.Spec`.
+
+The Runtime allocates an empty rootfs directory and pins authorized sources
+using descriptor-based path traversal that rejects symlinks. Runner places the
+launcher in the Workload cgroup at process creation. The launcher re-executes
+itself with user, mount and PID namespaces and explicit UID/GID mappings. The
+child is trusted PID 1: it builds a private tmpfs root, copies approved tools,
+binds explicit directories, mounts guest proc, closes host source descriptors,
+and detaches the old root using `pivot_root`.
+
+Before guest exec, init locks its OS thread, removes capability bounding,
+effective, permitted and inheritable sets, and locks out UID 0's implicit exec
+capabilities. Init is non-dumpable to protect its control descriptors. It starts
+the requested argv with only explicit environment and stdio, forwards signals,
+and reaps all children, including adopted orphans. The process remains alive
+until all of its descendants have exited; the main command's status is retained.
+
+Versioned, bounded READY/ERROR/EXIT frames travel over dedicated descriptors.
+The parent-to-Runtime and init-to-parent channels are independent. `OnStarted`
+only means the host launcher exists; `OnReady` advances the Workload to RUNNING
+after trusted init successfully starts the guest. EOF is always a protocol
+failure when a required message has not been received. A guest nonzero exit is
+a normal FINISHED result, while launcher/init failure is FAILED.
+
+Cleanup releases host descriptor references, kills the entire cgroup, waits
+for `populated 0`, checks host mount references and allocation identity, then
+uses non-recursive removal for the rootfs before removing the empty cgroup.
+An independent bounded context controls cleanup. Unconfirmed live processes
+retain both cgroup and rootfs; unexpected rootfs contents or mounts retain the
+directory and produce a cleanup failure. The Runtime holds no namespace FD or
+host mount of the guest root; external namespace pinning by another trusted
+host process is outside this in-process ownership model. Runtime-process crash
+recovery is not implemented.
+
+Implementation tests and outstanding host acceptance steps are recorded in
+`PHASE_2B_IMPLEMENTATION.md`. The probe is frozen pending the documented deletion
+gate; it is not called or imported by the integrated execution path.
+
 ---
 
 ## 17. Environment and Secrets
@@ -898,10 +942,8 @@ The following questions remain intentionally unresolved.
 
 ### Sandbox Runtime
 
-- Which namespaces are mandatory in the first version?
-- Should rootless operation be mandatory initially?
-- Should the sandbox use an internal init process?
-- How should root filesystem state be prepared?
+- How should persistent crash-recovery ownership records be managed?
+- What additional rootfs/tool profiles should follow the initial minimal set?
 
 ### Policy
 

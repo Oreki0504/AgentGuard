@@ -244,4 +244,60 @@ The first sandbox backend will use Linux security mechanisms directly.
 
 AgentGuard is currently in **Phase 2B — Namespace + Filesystem Isolation**.
 
+The integrated launcher/backend and acceptance tests are implemented. Namespace
+acceptance and removal of the experimental probe remain pending an authorized
+installation of the newly built launcher and a successful integration run.
+
 No production-ready security guarantees are currently provided.
+
+### Building and testing Phase 2B
+
+The initial tool set targets Debian/Ubuntu Linux amd64 and provides `/bin/sh`
+(dash), its dynamic loader and libc. Sandbox commands use absolute guest paths.
+Additional tools require explicit trusted Runtime file mappings. Host source
+paths must be canonical and contain no symlink components.
+
+```sh
+go build -o bin/agentguard ./cmd/agentguard
+go build -o bin/agentguard-launcher ./cmd/agentguard-launcher
+go test ./... -count=1
+go vet ./...
+go test -race ./... -count=1
+```
+
+After reviewing `scripts/install-launcher.sh` and
+`contrib/apparmor/agentguard-launcher`, a host administrator installs the
+root-owned launcher and its confined AppArmor profile:
+
+```sh
+sudo sh scripts/install-launcher.sh
+systemd-run --user --scope -p Delegate=yes -- sh scripts/test-integration.sh
+```
+
+The integration script creates a manager leaf inside its dedicated delegated
+scope, enables CPU/memory/PID controllers, and verifies that the installed
+launcher matches `bin/agentguard-launcher`. It then runs all tests. Missing
+integration prerequisites produce explicit skips in ordinary test runs;
+explicit but invalid prerequisites fail. The scoped profile supports guest
+tools under `/bin`, workspace at `/workspace`, scratch at `/scratch`, and
+Runtime rootfs allocations directly under `/tmp`.
+
+Given an already configured delegated `AGENTGUARD_CGROUP_ROOT`:
+
+```sh
+bin/agentguard run --sandbox --timeout 5s \
+  --workspace /absolute/canonical/project --scratch /absolute/canonical/scratch \
+  --cwd /workspace --env EXPLICIT=value -- /bin/sh -c 'pwd; printf "%s\n" "$EXPLICIT"'
+```
+
+Workspace defaults to read-only; `--workspace-readonly=false` explicitly permits
+writes. Scratch is writable. Direct development execution remains available
+with `agentguard run -- <command>`; a failed sandbox never selects that path.
+Neither mode implicitly inherits host environment variables. Sandbox resource
+limits include the launcher and init threads, so process limits must leave
+capacity for their Go runtimes.
+
+Phase 2B removes guest capabilities needed to undo filesystem restrictions.
+It does not supply the complete Phase 2C syscall/security policy or network
+isolation. Host networking remains shared; this phase is not a production
+boundary for arbitrary untrusted agent code.

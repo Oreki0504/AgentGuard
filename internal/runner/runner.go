@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"syscall"
 	"time"
@@ -17,7 +19,15 @@ type LinuxOptions struct {
 
 type Hooks struct {
 	OnStarted     func(pid int) error
+	OnReady       func(pid int) error
 	OnTerminating func(reason TerminationReason) error
+}
+
+// Startup.Wait must honor its context. It receives status from a trusted
+// launcher channel, never from workload stdout. It runs before OnReady.
+type Startup struct {
+	Timeout time.Duration
+	Wait    func(context.Context) error
 }
 
 type Request struct {
@@ -26,6 +36,9 @@ type Request struct {
 	WorkingDir string
 	Env        []string
 	Timeout    time.Duration
+	Stdin      io.Reader
+	ExtraFiles []*os.File
+	Startup    *Startup
 
 	Linux LinuxOptions
 	Hooks Hooks
@@ -45,9 +58,13 @@ type TerminationReason string
 const (
 	TerminationTimeout  TerminationReason = "timeout"
 	TerminationCanceled TerminationReason = "canceled"
+	TerminationStartup  TerminationReason = "startup_failed"
 )
 
 func Run(ctx context.Context, req Request) (Result, error) {
+	if req.Startup != nil && (req.Startup.Timeout <= 0 || req.Startup.Wait == nil) {
+		return Result{ExitCode: -1}, fmt.Errorf("invalid startup contract")
+	}
 	if req.Timeout > 0 {
 		var cancel context.CancelFunc
 
@@ -91,6 +108,8 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	}
 
 	cmd.Env = append([]string{}, req.Env...)
+	cmd.Stdin = req.Stdin
+	cmd.ExtraFiles = req.ExtraFiles
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -130,6 +149,36 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	go func() {
 		waitCh <- cmd.Wait()
 	}()
+
+	if req.Startup != nil {
+		startupCtx, cancel := context.WithTimeout(ctx, req.Startup.Timeout)
+		readyErr := req.Startup.Wait(startupCtx)
+		if startupCtx.Err() != nil {
+			readyErr = startupCtx.Err()
+		}
+		cancel()
+		if readyErr == nil && req.Hooks.OnReady != nil {
+			readyErr = req.Hooks.OnReady(cmd.Process.Pid)
+		}
+		if readyErr != nil {
+			var hookErr error
+			reason := TerminationStartup
+			if errors.Is(ctx.Err(), context.Canceled) {
+				reason = TerminationCanceled
+			}
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				reason = TerminationTimeout
+			}
+			if req.Hooks.OnTerminating != nil {
+				hookErr = req.Hooks.OnTerminating(reason)
+			}
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			<-waitCh
+			return Result{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: -1,
+				Duration: time.Since(start), TimedOut: errors.Is(readyErr, context.DeadlineExceeded),
+				Canceled: errors.Is(ctx.Err(), context.Canceled)}, errors.Join(fmt.Errorf("sandbox startup: %w", readyErr), hookErr)
+		}
+	}
 
 	var terminatingErr error
 

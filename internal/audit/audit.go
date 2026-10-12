@@ -11,6 +11,8 @@ const (
 	EventCleanupStarted      EventType = "workload_cleanup_started"
 	EventWorkloadFinished    EventType = "workload_finished"
 	EventWorkloadFailed      EventType = "workload_failed"
+	EventSandboxFailed       EventType = "sandbox_failed"
+	EventCleanupFailed       EventType = "workload_cleanup_failed"
 )
 
 type Event struct {

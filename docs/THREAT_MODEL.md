@@ -544,6 +544,35 @@ Even when all planned controls work correctly:
 
 AgentGuard should document these limitations rather than imply perfect isolation.
 
+### Phase 2B implementation boundary
+
+The integrated backend implements per-Workload user/mount/PID namespaces,
+private tmpfs roots, explicit source descriptors, guest-only proc, and trusted
+PID 1 supervision. Read-only bind mounts are paired with removal of guest
+capabilities and UID 0 exec capability restoration; plain read-only remounts
+alone are insufficient. Source traversal rejects symlinks and overlapping guest
+targets, and directory binds are non-recursive to avoid exposing nested host
+mounts. Runtime-owned cleanup retains resources when safety cannot be confirmed.
+
+These mechanisms have unit coverage; the new backend's host isolation and
+adversarial integration acceptance remain pending the installation/verification
+steps recorded in `PHASE_2B_IMPLEMENTATION.md`. The old probe's observations do
+not constitute evidence for the new backend.
+
+The installed launcher, its root-owned ancestor directories, explicit operator
+source mappings and confined AppArmor profile are trusted. The host operator
+must not authorize sensitive trees, host control sockets, or source directories
+that undermine the intended filesystem boundary. Directory content can change
+while exposed; pinning a source prevents path replacement, not changes to its
+contents. Another privileged/trusted host process retaining namespace FDs is
+outside the Runtime's resource ownership model.
+
+The complete Phase 2C seccomp/profile policy and `no_new_privs` are not yet
+implemented. Network namespaces and egress controls are also absent, including
+isolation from host abstract Unix sockets and host TCP services. Phase 2B does
+not establish a production boundary for arbitrary malicious code. Runtime
+`SIGKILL` recovery requires a future persistent registry or external supervisor.
+
 ---
 
 ## 10. Security Test Mapping

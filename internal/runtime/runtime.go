@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/Oreki0504/AgentGuard/internal/audit"
 	"github.com/Oreki0504/AgentGuard/internal/cgroupv2"
 	"github.com/Oreki0504/AgentGuard/internal/runner"
+	"github.com/Oreki0504/AgentGuard/internal/runtime/sandbox/linux"
 	"github.com/Oreki0504/AgentGuard/internal/workload"
 )
 
@@ -46,12 +48,14 @@ func (b linuxCgroupBackend) Create(
 const defaultCleanupTimeout = 2 * time.Second
 
 type Config struct {
+	Sandbox        *SandboxConfig
 	CgroupRoot     string
 	CleanupTimeout time.Duration
 	Audit          audit.Sink
 }
 
 type Runtime struct {
+	sandbox        *SandboxConfig
 	cgroups        cgroupBackend
 	execute        func(context.Context, runner.Request) (runner.Result, error)
 	cleanupTimeout time.Duration
@@ -93,6 +97,8 @@ func (r *Runtime) Run(
 	)
 
 	spec := w.Spec()
+	var rootfs *rootfsAllocation
+	var session *linux.Session
 
 	group, err := r.cgroups.Create(
 		cgroupName(w.ID()),
@@ -126,6 +132,27 @@ func (r *Runtime) Run(
 	}
 
 	req := requestFromSpec(spec)
+	if r.sandbox != nil {
+		// Validate request paths before allocating host filesystem resources.
+		if err := r.sandbox.launchConfig(w, "/validation-rootfs").Validate(); err != nil {
+			_ = cgroupFile.Close()
+			r.record(audit.EventSandboxFailed, w.ID(), 0, "config")
+			return runner.Result{ExitCode: -1}, r.failPreparing(w, group, err)
+		}
+		rootfs, err = allocateRootfs(r.sandbox.RootfsBase)
+		if err == nil {
+			session, err = linux.Prepare(r.sandbox.launchConfig(w, rootfs.path))
+		}
+		if err != nil {
+			_ = cgroupFile.Close()
+			r.record(audit.EventSandboxFailed, w.ID(), 0, "config")
+			return runner.Result{ExitCode: -1}, r.failPreparing(w, group, err, rootfs)
+		}
+		defer session.Close()
+		req = runner.Request{Command: r.sandbox.Launcher, Timeout: spec.Timeout,
+			ExtraFiles: session.ExtraFiles(),
+			Startup:    &runner.Startup{Timeout: r.sandbox.StartupTimeout, Wait: session.WaitReady}}
+	}
 
 	req.Linux.UseCgroupFD = true
 	req.Linux.CgroupFD = int(cgroupFile.Fd())
@@ -143,6 +170,10 @@ func (r *Runtime) Run(
 		)
 
 		return nil
+	}
+	if session != nil {
+		req.Hooks.OnReady = req.Hooks.OnStarted
+		req.Hooks.OnStarted = session.Started
 	}
 
 	killedDuringRun := false
@@ -189,6 +220,38 @@ func (r *Runtime) Run(
 	}
 
 	result, runErr := r.execute(ctx, req)
+	if session != nil {
+		// Always release host source/config/pipe references before checking
+		// cgroup emptiness and tearing down the rootfs allocation.
+		session.Started(0)
+		if runErr == nil && !result.TimedOut && !result.Canceled {
+			resultCtx, cancel := context.WithTimeout(context.Background(), r.sandbox.StartupTimeout)
+			code, statusErr := session.WaitResult(resultCtx)
+			cancel()
+			if statusErr != nil {
+				runErr = statusErr
+			} else if result.ExitCode != 0 {
+				runErr = fmt.Errorf("launcher exited abnormally after result")
+			} else {
+				result.ExitCode = code
+			}
+		}
+		session.Close()
+		if runErr != nil || result.TimedOut || result.Canceled {
+			reason := "execution"
+			var failure *linux.Failure
+			if errors.As(runErr, &failure) {
+				reason = failure.Stage
+			}
+			if result.TimedOut {
+				reason = "timeout"
+			}
+			if result.Canceled {
+				reason = "canceled"
+			}
+			r.record(audit.EventSandboxFailed, w.ID(), 0, reason)
+		}
+	}
 
 	closeErr := cgroupFile.Close()
 
@@ -256,9 +319,11 @@ func (r *Runtime) Run(
 	if err := r.cleanupGroup(
 		group,
 		!killedDuringRun,
+		rootfs,
 	); err != nil {
 		failed = true
 		errs = append(errs, err)
+		r.record(audit.EventCleanupFailed, w.ID(), 0, "resource_cleanup")
 	}
 
 	if cleaningErr == nil {
@@ -314,8 +379,31 @@ func New(config Config) (*Runtime, error) {
 	if cleanupTimeout == 0 {
 		cleanupTimeout = defaultCleanupTimeout
 	}
+	var sandbox *SandboxConfig
+	if config.Sandbox != nil {
+		copy := *config.Sandbox
+		if err := validateLauncher(copy.Launcher); err != nil {
+			return nil, err
+		}
+		if copy.RootfsBase == "" {
+			copy.RootfsBase = "/tmp"
+		}
+		if !filepath.IsAbs(copy.RootfsBase) || filepath.Clean(copy.RootfsBase) != copy.RootfsBase {
+			return nil, fmt.Errorf("rootfs base must be a clean absolute path")
+		}
+		if copy.StartupTimeout == 0 {
+			copy.StartupTimeout = linux.DefaultStartupTimeout
+		}
+		if copy.StartupTimeout < 0 || copy.StartupTimeout > linux.MaxStartupTimeout {
+			return nil, fmt.Errorf("invalid startup timeout")
+		}
+		copy.Files = append([]linux.File(nil), copy.Files...)
+		copy.Mounts = append([]linux.BindMount(nil), copy.Mounts...)
+		sandbox = &copy
+	}
 
 	return &Runtime{
+		sandbox: sandbox,
 		cgroups: linuxCgroupBackend{
 			root: config.CgroupRoot,
 		},
@@ -337,6 +425,7 @@ func cgroupName(workloadID string) string {
 func (r *Runtime) cleanupGroup(
 	group cgroupGroup,
 	killFirst bool,
+	allocations ...*rootfsAllocation,
 ) error {
 	cleanupCtx, cancel := context.WithTimeout(
 		context.Background(),
@@ -366,6 +455,15 @@ func (r *Runtime) cleanupGroup(
 				err,
 			),
 		)
+		// Retain allocations and cgroup when live processes cannot be ruled out.
+		return errors.Join(errs...)
+	}
+	for _, allocation := range allocations {
+		if allocation != nil {
+			if err := allocation.remove(cleanupCtx); err != nil {
+				errs = append(errs, fmt.Errorf("remove rootfs %s: %w", allocation.path, err))
+			}
+		}
 	}
 
 	if err := group.Remove(); err != nil {
@@ -385,6 +483,7 @@ func (r *Runtime) failPreparing(
 	w *workload.Workload,
 	group cgroupGroup,
 	cause error,
+	allocations ...*rootfsAllocation,
 ) error {
 	var errs []error
 
@@ -408,8 +507,9 @@ func (r *Runtime) failPreparing(
 			"",
 		)
 		if group != nil {
-			if err := r.cleanupGroup(group, true); err != nil {
+			if err := r.cleanupGroup(group, true, allocations...); err != nil {
 				errs = append(errs, err)
+				r.record(audit.EventCleanupFailed, w.ID(), 0, "resource_cleanup")
 			}
 		}
 
