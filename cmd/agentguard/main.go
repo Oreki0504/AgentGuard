@@ -29,18 +29,31 @@ func main() {
 	}
 
 	runFlags := flag.NewFlagSet("run", flag.ContinueOnError)
+
 	sandbox := runFlags.Bool("sandbox", false, "run with namespaces, filesystem isolation and delegated cgroup")
+
 	cgroupRoot := runFlags.String("cgroup-root", os.Getenv("AGENTGUARD_CGROUP_ROOT"), "delegated cgroup v2 root")
+
 	launcher := runFlags.String("launcher", "/usr/local/libexec/agentguard-launcher", "trusted installed launcher")
+
 	workspace := runFlags.String("workspace", "", "explicit host workspace exposed at /workspace")
+
 	readOnly := runFlags.Bool("workspace-readonly", true, "expose workspace read-only")
+
 	scratch := runFlags.String("scratch", "", "explicit writable host directory exposed at /scratch")
+
 	workingDir := runFlags.String("cwd", "", "working directory (guest path in sandbox mode)")
+
 	startupTimeout := runFlags.Duration("startup-timeout", linux.DefaultStartupTimeout, "bounded sandbox startup deadline")
+
 	memory := runFlags.Int64("memory", 128*1024*1024, "sandbox memory limit in bytes")
+
 	pids := runFlags.Int("pids", 128, "sandbox process/thread limit including trusted launcher")
+
 	cpu := runFlags.Int("cpu", 1000, "sandbox CPU limit in millicores")
+
 	var env environmentFlags
+
 	runFlags.Var(&env, "env", "explicit KEY=value (repeatable)")
 
 	timeout := runFlags.Duration(
@@ -120,6 +133,15 @@ func main() {
 
 	fmt.Fprint(os.Stdout, result.Stdout)
 	fmt.Fprint(os.Stderr, result.Stderr)
+	if result.StdoutTruncated {
+		fmt.Fprintln(os.Stderr,
+			"agentguard: warning: stdout was truncated")
+	}
+
+	if result.StderrTruncated {
+		fmt.Fprintln(os.Stderr,
+			"agentguard: warning: stderr was truncated")
+	}
 
 	if result.TimedOut {
 		fmt.Fprintf(

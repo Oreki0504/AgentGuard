@@ -1,7 +1,6 @@
 package runner
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -45,12 +44,14 @@ type Request struct {
 }
 
 type Result struct {
-	Stdout   string
-	Stderr   string
-	ExitCode int
-	Duration time.Duration
-	TimedOut bool
-	Canceled bool
+	Stdout          string
+	Stderr          string
+	StdoutTruncated bool
+	StderrTruncated bool
+	ExitCode        int
+	Duration        time.Duration
+	TimedOut        bool
+	Canceled        bool
 }
 
 type TerminationReason string
@@ -111,8 +112,8 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	cmd.Stdin = req.Stdin
 	cmd.ExtraFiles = req.ExtraFiles
 
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
+	stdout := limitedBuffer{limit: maxCapturedOutputBytes}
+	stderr := limitedBuffer{limit: maxCapturedOutputBytes}
 
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -136,10 +137,12 @@ func Run(ctx context.Context, req Request) (Result, error) {
 			_ = cmd.Wait()
 
 			return Result{
-				Stdout:   stdout.String(),
-				Stderr:   stderr.String(),
-				ExitCode: -1,
-				Duration: time.Since(start),
+				Stdout:          stdout.String(),
+				Stderr:          stderr.String(),
+				StdoutTruncated: stdout.truncated,
+				StderrTruncated: stderr.truncated,
+				ExitCode:        -1,
+				Duration:        time.Since(start),
 			}, fmt.Errorf("runner on-start hook failed: %w", err)
 		}
 	}
@@ -210,10 +213,12 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	duration := time.Since(start)
 
 	result := Result{
-		Stdout:   stdout.String(),
-		Stderr:   stderr.String(),
-		ExitCode: -1,
-		Duration: duration,
+		Stdout:          stdout.String(),
+		Stderr:          stderr.String(),
+		StdoutTruncated: stdout.truncated,
+		StderrTruncated: stderr.truncated,
+		ExitCode:        -1,
+		Duration:        duration,
 	}
 
 	if cmd.ProcessState != nil {
