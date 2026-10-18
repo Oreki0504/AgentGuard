@@ -133,6 +133,7 @@ func main() {
 
 	fmt.Fprint(os.Stdout, result.Stdout)
 	fmt.Fprint(os.Stderr, result.Stderr)
+
 	if result.StdoutTruncated {
 		fmt.Fprintln(os.Stderr,
 			"agentguard: warning: stdout was truncated")

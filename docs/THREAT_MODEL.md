@@ -554,10 +554,12 @@ alone are insufficient. Source traversal rejects symlinks and overlapping guest
 targets, and directory binds are non-recursive to avoid exposing nested host
 mounts. Runtime-owned cleanup retains resources when safety cannot be confirmed.
 
-These mechanisms have unit coverage; the new backend's host isolation and
-adversarial integration acceptance remain pending the installation/verification
-steps recorded in `PHASE_2B_IMPLEMENTATION.md`. The old probe's observations do
-not constitute evidence for the new backend.
+Phase 2B host integration tests passed on the development Linux environment,
+including filesystem isolation, read-only and writable bind mounts, process
+isolation, privilege reduction, and lifecycle cleanup.
+
+These tests provide evidence for the implemented controls but
+do not establish a production-grade security boundary.
 
 The installed launcher, its root-owned ancestor directories, explicit operator
 source mappings and confined AppArmor profile are trusted. The host operator

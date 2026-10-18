@@ -242,11 +242,14 @@ The first sandbox backend will use Linux security mechanisms directly.
 
 ## Development Status
 
-AgentGuard is currently in **Phase 2B — Namespace + Filesystem Isolation**.
+AgentGuard has completed Phase 2B — Namespace + Filesystem Isolation
+on the tested Linux development environment.
 
-The integrated launcher/backend and acceptance tests are implemented. Namespace
-acceptance and removal of the experimental probe remain pending an authorized
-installation of the newly built launcher and a successful integration run.
+The integrated launcher/backend passed the host integration tests,
+including namespace isolation, filesystem restrictions, cgroup
+resource controls, process supervision, and cleanup.
+
+Phase 2C — Privilege Reduction + Syscall Hardening is next.
 
 No production-ready security guarantees are currently provided.
 

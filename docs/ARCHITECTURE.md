@@ -616,7 +616,9 @@ launcher in the Workload cgroup at process creation. The launcher re-executes
 itself with user, mount and PID namespaces and explicit UID/GID mappings. The
 child is trusted PID 1: it builds a private tmpfs root, copies approved tools,
 binds explicit directories, mounts guest proc, closes host source descriptors,
-and detaches the old root using `pivot_root`.
+and detaches the old root using `pivot_root`.Authorized bind-mount sources are 
+reopened inside the new mount namespace and verified against the original pinned
+file descriptors before mounting.
 
 Before guest exec, init locks its OS thread, removes capability bounding,
 effective, permitted and inheritable sets, and locks out UID 0's implicit exec
@@ -642,9 +644,14 @@ host mount of the guest root; external namespace pinning by another trusted
 host process is outside this in-process ownership model. Runtime-process crash
 recovery is not implemented.
 
-Implementation tests and outstanding host acceptance steps are recorded in
-`PHASE_2B_IMPLEMENTATION.md`. The probe is frozen pending the documented deletion
-gate; it is not called or imported by the integrated execution path.
+Phase 2B integration and adversarial tests are implemented in
+`internal/runtime/sandbox_integration_test.go`.
+
+Host acceptance is performed using `scripts/test-integration.sh`
+inside a delegated systemd scope.
+
+The experimental namespace probe has been removed after
+successful integration testing.
 
 ---
 

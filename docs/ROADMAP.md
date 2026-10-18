@@ -158,7 +158,13 @@ Initial capabilities:
 
 ### Phase 2B — Namespace + Filesystem Isolation
 
-Implementation/refactor plan: [Phase 2B — Linux Sandbox Implementation Plan](PHASE_2B_IMPLEMENTATION.md). This plan records experimental evidence separately from the acceptance criteria below.
+Implementation and acceptance tests:
+[`sandbox_integration_test.go`](../internal/runtime/sandbox_integration_test.go).
+
+Host integration verification:
+[`scripts/test-integration.sh`](../scripts/test-integration.sh).
+
+Phase 2B acceptance has passed on the tested Linux development environment.
 
 #### Scope
 
@@ -183,13 +189,13 @@ Initial capabilities:
 
 #### Acceptance Criteria
 
-- [ ] Host files not explicitly exposed are unavailable.
-- [ ] A writable workspace can be explicitly provided.
-- [ ] Read-only mounts remain read-only.
-- [ ] The Workload cannot directly inspect unrelated host processes.
-- [ ] Namespace or filesystem setup failure prevents execution.
-- [ ] Host-file and host-process attack tests produce the expected denial behavior.
-- [ ] Security-relevant failures are observable through structured events.
+- [x] Host files not explicitly exposed are unavailable.
+- [x] A writable workspace can be explicitly provided.
+- [x] Read-only mounts remain read-only.
+- [x] The Workload cannot directly inspect unrelated host processes.
+- [x] Namespace or filesystem setup failure prevents execution.
+- [x] Host-file and host-process attack tests produce the expected denial behavior.
+- [x] Security-relevant failures are observable through structured events.
 
 ---
 
