@@ -59,7 +59,12 @@ func runInit(c Config, sources []*os.File, status *os.File) int {
 		return reportFailure(status, "privilege", "cannot protect init descriptors")
 	}
 	if err := prepareRootfs(c, sources); err != nil {
-		return reportFailure(status, "rootfs", "cannot establish guest filesystem")
+
+		return reportFailure(
+			status,
+			"rootfs",
+			"cannot establish guest filesystem",
+		)
 	}
 	if err := dropMountAuthority(); err != nil {
 		return reportFailure(status, "privilege", "cannot remove mount authority")

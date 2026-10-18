@@ -57,8 +57,17 @@ func prepareRootfs(c Config, sources []*os.File) error {
 		if err := os.MkdirAll(target, 0700); err != nil {
 			return err
 		}
-		if err := bindDirectory(sourcePath(len(c.Files)+i), target, m.ReadOnly); err != nil {
-			return err
+		if err := bindVerifiedDirectory(
+			sources[len(c.Files)+i],
+			m,
+			target,
+		); err != nil {
+			return fmt.Errorf(
+				"bind mount target=%q readonly=%t: %w",
+				m.Target,
+				m.ReadOnly,
+				err,
+			)
 		}
 	}
 	// proc is mounted only by namespace PID 1, and exposes that PID namespace.
@@ -93,4 +102,50 @@ func prepareRootfs(c Config, sources []*os.File) error {
 		return err
 	}
 	return os.Remove("/.oldroot")
+}
+
+func reopenVerifiedDirectory(path string, pinned *os.File) (*os.File, error) {
+	// Reopen the path inside the current mount namespace.
+	current, err := openSource(path, true)
+	if err != nil {
+		return nil, fmt.Errorf("reopen approved directory: %w", err)
+	}
+
+	// The original FD was opened by the trusted Runtime.
+	originalInfo, err := pinned.Stat()
+	if err != nil {
+		current.Close()
+		return nil, fmt.Errorf("stat pinned directory: %w", err)
+	}
+
+	currentInfo, err := current.Stat()
+	if err != nil {
+		current.Close()
+		return nil, fmt.Errorf("stat reopened directory: %w", err)
+	}
+
+	// Refuse to mount a different filesystem object.
+	if !os.SameFile(originalInfo, currentInfo) {
+		current.Close()
+		return nil, fmt.Errorf("approved directory changed before mount")
+	}
+
+	return current, nil
+}
+
+func bindVerifiedDirectory(
+	pinned *os.File,
+	m BindMount,
+	target string,
+) error {
+	current, err := reopenVerifiedDirectory(m.Source, pinned)
+	if err != nil {
+		return err
+	}
+	defer current.Close()
+
+	// This FD was opened in the current mount namespace.
+	source := fmt.Sprintf("/proc/self/fd/%d", current.Fd())
+
+	return bindDirectory(source, target, m.ReadOnly)
 }
