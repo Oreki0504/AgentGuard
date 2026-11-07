@@ -648,6 +648,16 @@ After confirmation, the same PID1 reaper forwards signals and reaps all children
 including adopted orphans. It remains alive until all descendants exit and
 retains the main command's status. There is no second tracer or reaper.
 
+The host Runner observes its direct child's exit with `waitid(WNOWAIT)` and
+collects standard streams before reaping it with `cmd.Wait()`. Until all
+termination decisions finish, the unreaped child reserves its PID, so a direct
+execution timeout cannot signal a recycled process-group number. Output pipe
+draining keeps its existing 500 ms bound and remains cancellable when an
+exited leader leaves descendants holding the pipes. For cgroup-managed runs,
+the termination hook kills the cgroup and Runner's fallback targets only the
+direct child through `os.Process`; it sends no additional process-group signal.
+Runner exclusively owns the direct child's reap; hooks must not reap that PID.
+
 Cleanup releases host descriptor references, kills the entire cgroup, waits
 for `populated 0`, checks host mount references and allocation identity, then
 uses non-recursive removal for the rootfs before removing the empty cgroup.

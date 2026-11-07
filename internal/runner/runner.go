@@ -17,6 +17,8 @@ type LinuxOptions struct {
 }
 
 type Hooks struct {
+	// Run exclusively owns reaping its direct child; hooks must not call wait
+	// for this PID. With UseCgroupFD, OnTerminating owns descendant termination.
 	OnStarted     func(pid int) error
 	OnReady       func(pid int) error
 	OnTerminating func(reason TerminationReason) error
@@ -109,18 +111,27 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	}
 
 	cmd.Env = append([]string{}, req.Env...)
-	cmd.Stdin = req.Stdin
 	cmd.ExtraFiles = req.ExtraFiles
 
 	stdout := limitedBuffer{limit: maxCapturedOutputBytes}
 	stderr := limitedBuffer{limit: maxCapturedOutputBytes}
 
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	streams := &commandIO{}
+	defer streams.close()
+	var err error
+	if cmd.Stdin, err = streams.input(req.Stdin); err != nil {
+		return Result{ExitCode: -1}, err
+	}
+	if cmd.Stdout, err = streams.output(&stdout); err != nil {
+		return Result{ExitCode: -1}, err
+	}
+	if cmd.Stderr, err = streams.output(&stderr); err != nil {
+		return Result{ExitCode: -1}, err
+	}
 
 	start := time.Now()
 
-	err := cmd.Start()
+	err = cmd.Start()
 
 	if err != nil {
 		return Result{
@@ -128,13 +139,26 @@ func Run(ctx context.Context, req Request) (Result, error) {
 			Duration: time.Since(start),
 		}, err
 	}
+	waitCh := streams.watch(cmd)
+	// Completion above observes exit and drains streams without reaping. Only
+	// this goroutine calls Wait, after it has finished sending group signals.
+	reap := func(done completion) error {
+		err := cmd.Wait()
+		if done.exitErr != nil {
+			return done.exitErr
+		}
+		if err != nil {
+			return err
+		}
+		return done.ioErr
+	}
 
 	if req.Hooks.OnStarted != nil {
 		if err := req.Hooks.OnStarted(cmd.Process.Pid); err != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			killCommand(cmd, req.Linux.UseCgroupFD)
 
 			// The direct child must always be reaped.
-			_ = cmd.Wait()
+			_ = reap(<-waitCh)
 
 			return Result{
 				Stdout:          stdout.String(),
@@ -146,12 +170,6 @@ func Run(ctx context.Context, req Request) (Result, error) {
 			}, fmt.Errorf("runner on-start hook failed: %w", err)
 		}
 	}
-
-	waitCh := make(chan error, 1)
-
-	go func() {
-		waitCh <- cmd.Wait()
-	}()
 
 	if req.Startup != nil {
 		startupCtx, cancel := context.WithTimeout(ctx, req.Startup.Timeout)
@@ -175,8 +193,8 @@ func Run(ctx context.Context, req Request) (Result, error) {
 			if req.Hooks.OnTerminating != nil {
 				hookErr = req.Hooks.OnTerminating(reason)
 			}
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-			<-waitCh
+			killCommand(cmd, req.Linux.UseCgroupFD)
+			_ = reap(<-waitCh)
 			return Result{
 				Stdout:          stdout.String(),
 				Stderr:          stderr.String(),
@@ -191,9 +209,10 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	}
 
 	var terminatingErr error
+	var done completion
 
 	select {
-	case err = <-waitCh:
+	case done = <-waitCh:
 		// Process exited on its own.
 
 	case <-ctx.Done():
@@ -209,13 +228,11 @@ func Run(ctx context.Context, req Request) (Result, error) {
 			terminatingErr = req.Hooks.OnTerminating(reason)
 		}
 
-		_ = syscall.Kill(
-			-cmd.Process.Pid,
-			syscall.SIGKILL,
-		)
+		killCommand(cmd, req.Linux.UseCgroupFD)
 
-		err = <-waitCh
+		done = <-waitCh
 	}
+	err = reap(done)
 
 	duration := time.Since(start)
 
