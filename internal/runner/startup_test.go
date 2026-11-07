@@ -73,3 +73,26 @@ func TestStartupReadyHookAndFastNonzeroExit(t *testing.T) {
 		t.Fatalf("result=%+v ready=%v err=%v", result, ready, err)
 	}
 }
+
+// A late success from the status waiter cannot override a startup deadline or
+// cancellation that has already occurred before OnReady.
+func TestStartupLateReadyCannotOverrideCancellation(t *testing.T) {
+	for _, mode := range []string{"deadline", "cancel"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ready := 0
+			result, err := Run(ctx, Request{Command: "/bin/sh", Args: []string{"-c", "exec /bin/sleep 10"},
+				Startup: &Startup{Timeout: 25 * time.Millisecond, Wait: func(start context.Context) error {
+					if mode == "cancel" {
+						cancel()
+					}
+					<-start.Done()
+					return nil
+				}}, Hooks: Hooks{OnReady: func(int) error { ready++; return nil }}})
+			if err == nil || ready != 0 || (mode == "deadline" && !result.TimedOut) || (mode == "cancel" && !result.Canceled) {
+				t.Fatalf("ready=%d result=%+v err=%v", ready, result, err)
+			}
+		})
+	}
+}

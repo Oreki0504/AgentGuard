@@ -7,7 +7,7 @@
 The project separates **security policy** from **enforcement** so that agent-controlled actions can be evaluated, constrained, isolated, and audited before they reach sensitive host capabilities.
 
 > **Status:** Early development.  
-> Current phase: **Phase 2B — Namespace + Filesystem Isolation**
+> Current phase: **Phase 2C — Bootstrap integrated; selected host acceptance verified**
 
 ---
 
@@ -249,11 +249,13 @@ The integrated launcher/backend passed the host integration tests,
 including namespace isolation, filesystem restrictions, cgroup
 resource controls, process supervision, and cleanup.
 
-Phase 2C — Privilege Reduction + Syscall Hardening is next.
+Phase 2C connects the C Bootstrap and kernel exec observer to the existing Go
+launcher. The authorized host rollout and selected acceptance cases passed; see
+[the Bootstrap design and usage](docs/BOOTSTRAP.md).
 
 No production-ready security guarantees are currently provided.
 
-### Building and testing Phase 2B
+### Building and testing the sandbox
 
 The initial tool set targets Debian/Ubuntu Linux amd64 and provides `/bin/sh`
 (dash), its dynamic loader and libc. Sandbox commands use absolute guest paths.
@@ -268,18 +270,21 @@ go vet ./...
 go test -race ./... -count=1
 ```
 
-After reviewing `scripts/install-launcher.sh` and
+Build and install the independent Bootstrap using [docs/BOOTSTRAP.md](docs/BOOTSTRAP.md)
+before installing the matching v2 launcher. After reviewing `scripts/install-launcher.sh` and
 `contrib/apparmor/agentguard-launcher`, a host administrator installs the
 root-owned launcher and its confined AppArmor profile:
 
 ```sh
 sudo sh scripts/install-launcher.sh
-systemd-run --user --scope -p Delegate=yes -- sh scripts/test-integration.sh
+# Run only the reviewed, individually authorized integration case:
+systemd-run --user --scope -p Delegate=yes -- sh scripts/test-integration.sh -run '^TestSandboxExecutionIntegration$'
 ```
 
 The integration script creates a manager leaf inside its dedicated delegated
 scope, enables CPU/memory/PID controllers, and verifies that the installed
-launcher matches `bin/agentguard-launcher`. It then runs all tests. Missing
+launcher matches `bin/agentguard-launcher`. Pass the specific authorized test
+selector; an unrestricted invocation runs all tests. Missing
 integration prerequisites produce explicit skips in ordinary test runs;
 explicit but invalid prerequisites fail. The scoped profile supports guest
 tools under `/bin`, workspace at `/workspace`, scratch at `/scratch`, and
@@ -300,7 +305,14 @@ Neither mode implicitly inherits host environment variables. Sandbox resource
 limits include the launcher and init threads, so process limits must leave
 capacity for their Go runtimes.
 
-Phase 2B removes guest capabilities needed to undo filesystem restrictions.
-It does not supply the complete Phase 2C syscall/security policy or network
-isolation. Host networking remains shared; this phase is not a production
-boundary for arbitrary untrusted agent code.
+Phase 2C runs the fixed C Bootstrap after the Workload AppArmor transition.
+It checks the enforce label, all five zero capability sets, readonly executable
+mounts and FD contract, then installs NNP and a default-deny seccomp filter.
+Go PID1 reports READY only after the expected Guest exec event and successful
+resume/detach. The outer launcher contract is v2; mixed v1/v2 components fail
+closed. Direct execution remains an explicit separate Runtime configuration.
+
+The independently built C artifact and installation are documented in
+[docs/BOOTSTRAP.md](docs/BOOTSTRAP.md). Selected lifecycle cases and the installed
+global-path Go Guest/descendant test passed on the development host. These checks
+do not establish compatibility or security for arbitrary workloads.

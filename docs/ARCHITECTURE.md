@@ -602,7 +602,7 @@ Likely mechanisms include:
 
 The exact mechanism set will be refined through implementation and testing.
 
-### Current Phase 2B implementation
+### Current Linux sandbox implementation
 
 `runtime.Config.Sandbox` explicitly selects the Linux backend. The existing
 direct execution path remains available when that configuration is absent.
@@ -610,29 +610,43 @@ Only trusted Runtime configuration selects the installed root-owned launcher
 and authorizes host file/directory exposures; these Linux details are not
 fields in `workload.Spec`.
 
-The Runtime allocates an empty rootfs directory and pins authorized sources
-using descriptor-based path traversal that rejects symlinks. Runner places the
-launcher in the Workload cgroup at process creation. The launcher re-executes
-itself with user, mount and PID namespaces and explicit UID/GID mappings. The
-child is trusted PID 1: it builds a private tmpfs root, copies approved tools,
-binds explicit directories, mounts guest proc, closes host source descriptors,
-and detaches the old root using `pivot_root`.Authorized bind-mount sources are 
-reopened inside the new mount namespace and verified against the original pinned
-file descriptors before mounting.
+The Runtime validates the launch contract, pins the fixed trusted C Bootstrap,
+allocates an empty rootfs directory and pins authorized sources using descriptor
+traversal that rejects symlinks. Runner places the launcher in the Workload
+cgroup at process creation. The launcher validates its exact AppArmor enforce
+label and absence of stacking, then re-executes itself with user, mount and PID
+namespaces and explicit UID/GID mappings.
 
-Before guest exec, init locks its OS thread, removes capability bounding,
-effective, permitted and inheritable sets, and locks out UID 0's implicit exec
-capabilities. Init is non-dumpable to protect its control descriptors. It starts
-the requested argv with only explicit environment and stdio, forwards signals,
-and reaps all children, including adopted orphans. The process remains alive
-until all of its descendants have exited; the main command's status is retained.
+The child is trusted Go PID1. On a locked OS thread, it builds a private tmpfs
+root, copies Bootstrap and approved tools, binds explicit directories and mounts
+guest proc. Authorized bind sources are reopened in the new mount namespace and
+matched against their pinned descriptors before mounting. PID1 closes host
+sources, detaches the old root using `pivot_root`, and remounts the executable
+layer read-only. `/tmp` and `/workspace` are separate noexec mounts; explicit
+directory binds preserve the operator's chosen readonly mode.
+
+PID1 is non-dumpable to protect its control descriptors. It clears the forking
+thread's five capability sets, locks out UID 0's implicit exec capabilities and
+starts only `/.agentguard/bootstrap` through the fixed AppArmor Cx transition.
+The single-threaded C Bootstrap verifies its actual workload label, capabilities,
+executable mounts, configuration and descriptors, then installs no_new_privs
+and default-deny seccomp before Guest exec. Other Go runtime threads remain part
+of the trusted PID1; the thread-local drop does not imply that the entire Go
+process has lost its privileges. See [the Bootstrap contract](BOOTSTRAP.md).
 
 Versioned, bounded READY/ERROR/EXIT frames travel over dedicated descriptors.
 The parent-to-Runtime and init-to-parent channels are independent. `OnStarted`
 only means the host launcher exists; `OnReady` advances the Workload to RUNNING
-after trusted init successfully starts the guest. EOF is always a protocol
-failure when a required message has not been received. A guest nonzero exit is
-a normal FINISHED result, while launcher/init failure is FAILED.
+after PID1 verifies the expected Guest PTRACE_EVENT_EXEC, matches its former
+TID and successfully detaches/resumes it. Bootstrap's initial exec stop is a
+separate event and cannot produce READY. The outer contract is version 2;
+mixed-version components fail closed. EOF is always a protocol failure when a
+required message has not been received. A guest nonzero exit is a normal
+FINISHED result, while launcher/init failure is FAILED.
+
+After confirmation, the same PID1 reaper forwards signals and reaps all children,
+including adopted orphans. It remains alive until all descendants exit and
+retains the main command's status. There is no second tracer or reaper.
 
 Cleanup releases host descriptor references, kills the entire cgroup, waits
 for `populated 0`, checks host mount references and allocation identity, then
@@ -644,14 +658,15 @@ host mount of the guest root; external namespace pinning by another trusted
 host process is outside this in-process ownership model. Runtime-process crash
 recovery is not implemented.
 
-Phase 2B integration and adversarial tests are implemented in
+Sandbox integration and adversarial tests are implemented in
 `internal/runtime/sandbox_integration_test.go`.
 
 Host acceptance is performed using `scripts/test-integration.sh`
 inside a delegated systemd scope.
 
-The experimental namespace probe has been removed after
-successful integration testing.
+The separately built Bootstrap test probe exercises confined exec-observer
+failures. Its helper entry points exist only in the Go test binary; its AppArmor
+attachment is generated from the production policy.
 
 ---
 

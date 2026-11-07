@@ -16,3 +16,6 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# Local test plans, execution records and acceptance evidence
+/test-records/

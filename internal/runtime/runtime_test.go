@@ -114,6 +114,8 @@ func newTestRuntime(
 	}
 
 	rt := &Runtime{
+		// Unit tests never exec this fixture or require a privileged installation.
+		openBootstrap:  func() (*os.File, error) { return os.Open("/usr/bin/dash") },
 		cgroups:        backend,
 		execute:        execute,
 		cleanupTimeout: time.Second,

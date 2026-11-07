@@ -1,12 +1,12 @@
 package linux
 
 import (
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -24,12 +24,32 @@ func reportFailure(status *os.File, stage, reason string) int {
 	return 125
 }
 
+// Check the actual attached domain before creating UserNS or preparing rootfs.
+// Namespace-local labels alone can conceal an outer stacked profile.
+func checkLauncherProfile(readFile func(string) ([]byte, error)) error {
+	label, err := readFile("/proc/self/attr/apparmor/current")
+	if err != nil || string(label) != "agentguard-launcher (enforce)\n" {
+		return &Failure{Stage: "privilege", Reason: "unexpected launcher AppArmor label"}
+	}
+	for _, name := range []string{".stacked", ".ns_stacked"} {
+		data, err := readFile("/sys/kernel/security/apparmor/" + name)
+		if err != nil || strings.TrimSpace(string(data)) != "no" {
+			return &Failure{Stage: "privilege", Reason: "unexpected launcher AppArmor stacking"}
+		}
+	}
+	return nil
+}
+
 // Launch is the only executable entry point. The namespace init has an
 // independent status pipe; it never inherits the outer Runtime status FD.
 func Launch(args []string) int {
 	configFile := os.NewFile(3, "config")
 	status := os.NewFile(4, "status")
 	defer status.Close()
+	defer configFile.Close()
+	if err := checkLauncherProfile(os.ReadFile); err != nil {
+		return reportFailure(status, "privilege", err.Error())
+	}
 	// Go preserves inherited non-CLOEXEC descriptors unless told otherwise.
 	// Mark every non-stdio descriptor before either re-exec or guest exec;
 	// ExtraFiles below is the only allowlist that can clear CLOEXEC again.
@@ -58,15 +78,34 @@ func Launch(args []string) int {
 		syscall.CloseOnExec(5 + i)
 		defer sources[i].Close()
 	}
+	bootstrap := os.NewFile(uintptr(5+len(sources)), "bootstrap")
+	defer bootstrap.Close()
+	// Bind the supplied handle to the fixed installed source in both outer
+	// and init processes. No caller-selected image may use the Cx entry.
+	installed, err := openSource(BootstrapPath, false)
+	if err != nil {
+		return reportFailure(status, "config", "cannot inspect installed bootstrap")
+	}
+	providedInfo, providedErr := bootstrap.Stat()
+	installedInfo, installedErr := installed.Stat()
+	installed.Close()
+	if providedErr != nil || installedErr != nil || !os.SameFile(providedInfo, installedInfo) {
+		return reportFailure(status, "config", "bootstrap source identity mismatch")
+	}
 	if len(args) == 1 && args[0] == "--init" {
-		configFile.Close()
+		if err := closeVerified(configFile); err != nil {
+			return reportFailure(status, "config", "cannot close host configuration")
+		}
 		if os.Getpid() != 1 {
 			return reportFailure(status, "namespace", "init must be namespace PID 1")
 		}
-		return runInit(c, sources, status)
+		return runInit(c, sources, bootstrap, status)
 	}
 	if len(args) != 0 {
 		return reportFailure(status, "config", "unexpected launcher argument")
+	}
+	if err := ValidateTrustedExecutable(BootstrapPath); err != nil {
+		return reportFailure(status, "config", "untrusted installed bootstrap")
 	}
 	if _, err := configFile.Seek(0, io.SeekStart); err != nil {
 		return reportFailure(status, "config", "cannot rewind config")
@@ -84,7 +123,7 @@ func Launch(args []string) int {
 	cmd := exec.Command(exe, "--init")
 	cmd.Env = []string{}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	cmd.ExtraFiles = append([]*os.File{configFile, childWrite}, sources...)
+	cmd.ExtraFiles = append(append([]*os.File{configFile, childWrite}, sources...), bootstrap)
 	cmd.SysProcAttr = namespaceAttributes()
 	signals := make(chan os.Signal, 8)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP, syscall.SIGQUIT)
@@ -94,6 +133,7 @@ func Launch(args []string) int {
 	}
 	childWrite.Close()
 	configFile.Close()
+	bootstrap.Close()
 	for _, f := range sources {
 		f.Close()
 	}
@@ -146,5 +186,3 @@ func Launch(args []string) int {
 	}
 	return 0 // The actual command's status is carried by EXIT, never guessed.
 }
-
-func sourcePath(index int) string { return fmt.Sprintf("/proc/self/fd/%d", 5+index) }

@@ -55,6 +55,7 @@ type Config struct {
 }
 
 type Runtime struct {
+	openBootstrap  func() (*os.File, error)
 	sandbox        *SandboxConfig
 	cgroups        cgroupBackend
 	execute        func(context.Context, runner.Request) (runner.Result, error)
@@ -139,9 +140,16 @@ func (r *Runtime) Run(
 			r.record(audit.EventSandboxFailed, w.ID(), 0, "config")
 			return runner.Result{ExitCode: -1}, r.failPreparing(w, group, err)
 		}
-		rootfs, err = allocateRootfs(r.sandbox.RootfsBase)
+		bootstrap, openErr := r.openBootstrap()
+		err = openErr
 		if err == nil {
-			session, err = linux.Prepare(r.sandbox.launchConfig(w, rootfs.path))
+			rootfs, err = allocateRootfs(r.sandbox.RootfsBase)
+			if err == nil {
+				// Prepare owns the pinned handle, including on failure.
+				session, err = linux.Prepare(r.sandbox.launchConfig(w, rootfs.path), bootstrap)
+			} else {
+				bootstrap.Close()
+			}
 		}
 		if err != nil {
 			_ = cgroupFile.Close()
@@ -403,7 +411,8 @@ func New(config Config) (*Runtime, error) {
 	}
 
 	return &Runtime{
-		sandbox: sandbox,
+		openBootstrap: func() (*os.File, error) { return linux.OpenTrustedExecutable(linux.BootstrapPath) },
+		sandbox:       sandbox,
 		cgroups: linuxCgroupBackend{
 			root: config.CgroupRoot,
 		},

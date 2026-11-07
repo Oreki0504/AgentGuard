@@ -18,8 +18,8 @@ func prctl(option, arg uintptr) error {
 	return nil
 }
 
-// A narrow Phase 2B prerequisite: guest exec cannot reacquire mount authority
-// via UID 0 or file capabilities. Full syscall/profile policy remains Phase 2C.
+// Bootstrap must inherit no capability or ability to reacquire it at exec.
+// C rechecks all five sets after the fixed Cx transition.
 // The caller must keep the OS thread locked through StartProcess: Linux
 // capabilities and securebits are thread-local.
 func dropMountAuthority() error {
@@ -51,14 +51,15 @@ func dropMountAuthority() error {
 	return nil
 }
 
-func runInit(c Config, sources []*os.File, status *os.File) int {
+func runInit(c Config, sources []*os.File, bootstrap, status *os.File) int {
+	deadline := time.Now().Add(c.StartupTimeout)
 	runtime.LockOSThread()
 	// Do not unlock: privileged Go runtime threads must never be selected for
 	// the guest fork, and /proc/1/fd must not expose the trusted status channel.
 	if err := prctl(4 /* PR_SET_DUMPABLE */, 0); err != nil {
 		return reportFailure(status, "privilege", "cannot protect init descriptors")
 	}
-	if err := prepareRootfs(c, sources); err != nil {
+	if err := prepareBootstrapRootfs(c, sources, bootstrap); err != nil {
 
 		return reportFailure(
 			status,
@@ -66,26 +67,40 @@ func runInit(c Config, sources []*os.File, status *os.File) int {
 			"cannot establish guest filesystem",
 		)
 	}
+	contract, err := newBootstrapConfig(c, "/tmp")
+	if err != nil {
+		return reportFailure(status, "config", "cannot create bootstrap contract")
+	}
+	defer contract.Close()
 	if err := dropMountAuthority(); err != nil {
 		return reportFailure(status, "privilege", "cannot remove mount authority")
 	}
 	signals := make(chan os.Signal, 16)
 	signal.Notify(signals, syscall.SIGCHLD, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP, syscall.SIGQUIT)
 	defer signal.Stop(signals)
-	process, err := os.StartProcess(c.Argv[0], c.Argv, &os.ProcAttr{
-		Dir: c.WorkingDir, Env: append([]string{}, c.Env...),
-		Files: []*os.File{os.Stdin, os.Stdout, os.Stderr},
-		Sys:   &syscall.SysProcAttr{Setpgid: true},
+	process, err := os.StartProcess(bootstrapEntry, []string{bootstrapEntry}, &os.ProcAttr{
+		Dir: "/", Env: []string{},
+		Files: []*os.File{os.Stdin, os.Stdout, os.Stderr, contract},
+		Sys:   &syscall.SysProcAttr{Setpgid: true, Ptrace: true},
 	})
 	if err != nil {
-		return reportFailure(status, "exec", "cannot start requested command")
+		return reportFailure(status, "exec", "cannot start traced bootstrap")
 	}
 	pid := process.Pid
 	// wait4 below is the sole reaper, including adopted children.
 	_ = process.Release()
-	if err := WriteMessage(status, Message{Version: Version, Type: "READY"}); err != nil {
-		return 125
+	if err := closeVerified(contract); err != nil {
+		return reportFailure(status, "config", "cannot close parent bootstrap contract")
 	}
+	if err := confirmGuestReady(pid, deadline, signals, status, kernelTraceOps()); err != nil {
+		return reportFailure(status, "exec", "cannot confirm and resume Guest exec")
+	}
+	return reapGuest(pid, status, signals)
+}
+
+// Shared by the existing PID1 path and the confined exec-evidence test. This
+// remains the sole wait4 reaper after startup, including adopted descendants.
+func reapGuest(pid int, status *os.File, signals <-chan os.Signal) int {
 	mainExited := false
 	code := 0
 	ticker := time.NewTicker(10 * time.Millisecond)

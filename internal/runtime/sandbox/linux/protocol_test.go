@@ -19,10 +19,13 @@ func testConfig(t *testing.T) Config {
 
 func TestConfigRejectsUnsafeInputs(t *testing.T) {
 	tests := map[string]func(*Config){
-		"relative executable": func(c *Config) { c.Argv[0] = "sh" },
-		"traversal":           func(c *Config) { c.Mounts = []BindMount{{Source: "/tmp", Target: "/workspace/../proc"}} },
-		"reserved proc":       func(c *Config) { c.Mounts = []BindMount{{Source: "/tmp", Target: "/proc/x"}} },
-		"root exposure":       func(c *Config) { c.Mounts = []BindMount{{Source: "/", Target: "/workspace"}} },
+		"legacy launch contract":  func(c *Config) { c.Version = 1 },
+		"unknown launch contract": func(c *Config) { c.Version = Version + 1 },
+		"oversized JSON frame":    func(c *Config) { c.Argv = append(c.Argv, strings.Repeat("\n", MaxConfigSize/2)) },
+		"relative executable":     func(c *Config) { c.Argv[0] = "sh" },
+		"traversal":               func(c *Config) { c.Mounts = []BindMount{{Source: "/tmp", Target: "/workspace/../proc"}} },
+		"reserved proc":           func(c *Config) { c.Mounts = []BindMount{{Source: "/tmp", Target: "/proc/x"}} },
+		"root exposure":           func(c *Config) { c.Mounts = []BindMount{{Source: "/", Target: "/workspace"}} },
 		"nested targets": func(c *Config) {
 			c.Mounts = []BindMount{{Source: "/tmp", Target: "/workspace"}, {Source: "/tmp", Target: "/workspace/x"}}
 		},
@@ -51,7 +54,7 @@ func TestMessageRejectsMalformedFrames(t *testing.T) {
 		b.WriteString(body)
 		return b.Bytes()
 	}
-	for _, data := range [][]byte{nil, {0, 0, 0}, {255, 255, 255, 255}, valid(`{"version":1,"type":"READY","extra":1}`), valid(`{"version":2,"type":"READY"}`), valid(`{"version":1,"type":"EXIT"}`), valid(`{"version":1,"type":"READY"} {}`)} {
+	for _, data := range [][]byte{nil, {0, 0, 0}, {255, 255, 255, 255}, valid(`{"version":2,"type":"READY","extra":1}`), valid(`{"version":1,"type":"READY"}`), valid(`{"version":2,"type":"EXIT"}`), valid(`{"version":2,"type":"READY"} {}`)} {
 		if _, err := ReadMessage(bytes.NewReader(data)); err == nil {
 			t.Fatalf("accepted %q", data)
 		}
@@ -138,7 +141,11 @@ func TestPrepareDoesNotInheritEnvironment(t *testing.T) {
 	t.Setenv("AGENTGUARD_SECRET", "do-not-copy")
 	c := testConfig(t)
 	c.Env = []string{"EXPLICIT=value"}
-	s, err := Prepare(c)
+	bootstrap, err := os.Open(c.Files[0].Source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := Prepare(c, bootstrap)
 	if err != nil {
 		t.Fatal(err)
 	}

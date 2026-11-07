@@ -1,10 +1,6 @@
 package runtime
 
 import (
-	"fmt"
-	"os"
-	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/Oreki0504/AgentGuard/internal/runtime/sandbox/linux"
@@ -23,26 +19,7 @@ type SandboxConfig struct {
 }
 
 func validateLauncher(name string) error {
-	if !filepath.IsAbs(name) || filepath.Clean(name) != name {
-		return fmt.Errorf("launcher must have a clean absolute path")
-	}
-	for p := name; ; p = filepath.Dir(p) {
-		info, err := os.Lstat(p)
-		if err != nil {
-			return fmt.Errorf("inspect trusted launcher: %w", err)
-		}
-		stat, ok := info.Sys().(*syscall.Stat_t)
-		if !ok || stat.Uid != 0 || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0022 != 0 {
-			return fmt.Errorf("launcher and ancestors must be root-owned and not group/world writable")
-		}
-		if p == name && (!info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 || info.Mode()&(os.ModeSetuid|os.ModeSetgid) != 0) {
-			return fmt.Errorf("launcher must be a regular, non-setuid executable")
-		}
-		if p == "/" {
-			break
-		}
-	}
-	return nil
+	return linux.ValidateTrustedExecutable(name)
 }
 
 func (s SandboxConfig) launchConfig(w *workload.Workload, rootfs string) linux.Config {

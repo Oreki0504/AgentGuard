@@ -201,6 +201,13 @@ Initial capabilities:
 
 ### Phase 2C — Privilege Reduction + Syscall Hardening
 
+The fixed Bootstrap/Launcher policy is implemented. Selected shell/Go,
+descendant, startup-failure and lifecycle checks passed on the development
+Linux host. See [the Bootstrap design](BOOTSTRAP.md) and
+[`sandbox_integration_test.go`](../internal/runtime/sandbox_integration_test.go).
+Backend security is currently selected by trusted Runtime configuration;
+WorkloadSpec security-intent mapping remains separate work.
+
 #### Scope
 
 Reduce the privilege and syscall surface available to Workloads.
@@ -223,13 +230,13 @@ Initial capabilities:
 
 #### Acceptance Criteria
 
-- [ ] Unnecessary Linux capabilities are removed.
-- [ ] `no_new_privs` is applied where required.
-- [ ] A first seccomp profile is implemented.
-- [ ] At least one intentionally forbidden syscall is verified to fail.
+- [x] Unnecessary Linux capabilities are removed.
+- [x] `no_new_privs` is applied where required.
+- [x] A first seccomp profile is implemented.
+- [x] At least one intentionally forbidden syscall is verified to fail.
 - [ ] WorkloadSpec security intent is translated into backend-specific enforcement without exposing Linux-specific details in the WorkloadSpec contract.
-- [ ] Failure to establish required protection prevents Workload startup.
-- [ ] AgentGuard never silently falls back to unrestricted host execution.
+- [x] Failure to establish required protection prevents Workload startup.
+- [x] AgentGuard never silently falls back to unrestricted host execution.
 
 ### Phase 2 Complete When
 

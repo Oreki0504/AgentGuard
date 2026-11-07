@@ -544,7 +544,7 @@ Even when all planned controls work correctly:
 
 AgentGuard should document these limitations rather than imply perfect isolation.
 
-### Phase 2B implementation boundary
+### Linux sandbox implementation boundary
 
 The integrated backend implements per-Workload user/mount/PID namespaces,
 private tmpfs roots, explicit source descriptors, guest-only proc, and trusted
@@ -561,19 +561,27 @@ isolation, privilege reduction, and lifecycle cleanup.
 These tests provide evidence for the implemented controls but
 do not establish a production-grade security boundary.
 
-The installed launcher, its root-owned ancestor directories, explicit operator
-source mappings and confined AppArmor profile are trusted. The host operator
+The installed Launcher and C Bootstrap, their root-owned ancestor directories,
+explicit operator source mappings and confined AppArmor profile are trusted. The host operator
 must not authorize sensitive trees, host control sockets, or source directories
 that undermine the intended filesystem boundary. Directory content can change
 while exposed; pinning a source prevents path replacement, not changes to its
 contents. Another privileged/trusted host process retaining namespace FDs is
 outside the Runtime's resource ownership model.
 
-The complete Phase 2C seccomp/profile policy and `no_new_privs` are not yet
-implemented. Network namespaces and egress controls are also absent, including
-isolation from host abstract Unix sockets and host TCP services. Phase 2B does
-not establish a production boundary for arbitrary malicious code. Runtime
-`SIGKILL` recovery requires a future persistent registry or external supervisor.
+Phase 2C adds a fixed Bootstrap Cx transition, exact enforce/no-stacking checks,
+five zero capability sets at the Guest boundary, readonly executable mounts,
+descriptor checks, `no_new_privs` and an amd64 default-deny seccomp allowlist.
+Go PID1 reports readiness only after verifying the expected Guest exec event
+and successfully resuming it. The allowlist supports the tested shell/Go
+workloads; it does not establish compatibility for arbitrary executables.
+
+The host network namespace is still shared. The current syscall policy denies
+socket creation, and standard-stream checks reject inherited socket descriptors;
+network namespaces and destination-aware egress controls remain unimplemented.
+These controls do not establish a production boundary for arbitrary malicious
+code. Runtime `SIGKILL` recovery still requires a persistent registry or external
+supervisor.
 
 ---
 

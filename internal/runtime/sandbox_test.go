@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -252,6 +253,69 @@ func TestCleanupFailureIsAuditedAndFailsWorkload(t *testing.T) {
 			}
 			if !found {
 				t.Fatal("cleanup failure not audited")
+			}
+		})
+	}
+}
+
+func TestSandboxBootstrapPreparationFailures(t *testing.T) {
+	for _, mode := range []string{"invalid-config", "missing-bootstrap", "rootfs-failure", "source-failure"} {
+		t.Run(mode, func(t *testing.T) {
+			rt, _, group := newTestRuntime(func(context.Context, runner.Request) (runner.Result, error) {
+				t.Fatal("invalid preparation reached launcher")
+				return runner.Result{}, nil
+			})
+			base := t.TempDir()
+			files, err := linux.ShellFiles()
+			if err != nil {
+				t.Fatal(err)
+			}
+			rt.sandbox = &SandboxConfig{Launcher: "/trusted/launcher", RootfsBase: base, StartupTimeout: time.Second, Files: files}
+			spec := workload.Spec{Command: "/bin/sh"}
+			if mode == "invalid-config" {
+				spec.Command = "/bin/unapproved"
+			}
+			if mode == "rootfs-failure" {
+				rt.sandbox.RootfsBase = filepath.Join(base, "absent")
+			}
+			if mode == "source-failure" {
+				rt.sandbox.Files[0].Source = filepath.Join(base, "absent-tool")
+			}
+			var opened *os.File
+			var fd uintptr
+			rt.openBootstrap = func() (*os.File, error) {
+				if mode == "invalid-config" {
+					t.Fatal("invalid C contract reached source opening")
+				}
+				if mode == "missing-bootstrap" {
+					return nil, os.ErrNotExist
+				}
+				var err error
+				opened, err = os.Open("/usr/bin/dash")
+				if err == nil {
+					fd = opened.Fd()
+				}
+				return opened, err
+			}
+			w, err := workload.New("bootstrap-"+mode, spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = rt.Run(context.Background(), w)
+			if err == nil || w.State() != workload.StateFailed || !w.StartedAt().IsZero() {
+				t.Fatalf("state=%v err=%v", w.State(), err)
+			}
+			if opened != nil {
+				if _, _, errno := syscall.Syscall(syscall.SYS_FCNTL, fd, syscall.F_GETFD, 0); errno != syscall.EBADF {
+					t.Fatalf("bootstrap leaked: %v", errno)
+				}
+			}
+			entries, err := os.ReadDir(base)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("preparation left allocations: %v %v", entries, err)
+			}
+			if !group.killCalled || !group.waitEmptyCalled || !group.removeCalled {
+				t.Fatal("preparation failure skipped cgroup cleanup")
 			}
 		})
 	}

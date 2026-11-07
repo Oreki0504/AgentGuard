@@ -48,19 +48,25 @@ type Session struct {
 	config      *os.File
 	read, write *os.File
 	sources     []*os.File
+	bootstrap   *os.File
 }
 
-func Prepare(c Config) (*Session, error) {
-	if err := c.Validate(); err != nil {
-		return nil, err
-	}
-	s := &Session{}
+// Prepare takes ownership of bootstrap on success and failure. The trusted
+// Runtime pins this handle from BootstrapPath before calling Prepare.
+func Prepare(c Config, bootstrap *os.File) (*Session, error) {
+	s := &Session{bootstrap: bootstrap}
 	ok := false
 	defer func() {
 		if !ok {
 			s.Close()
 		}
 	}()
+	if err := c.Validate(); err != nil {
+		return nil, err
+	}
+	if bootstrap == nil {
+		return nil, fmt.Errorf("missing trusted bootstrap source")
+	}
 	var err error
 	// Unlink the config immediately: no persistent secret-bearing config and no
 	// dependence on a pipe buffer fitting the entire configuration.
@@ -100,7 +106,8 @@ func Prepare(c Config) (*Session, error) {
 }
 
 func (s *Session) ExtraFiles() []*os.File {
-	return append([]*os.File{s.config, s.write}, s.sources...)
+	files := append([]*os.File{s.config, s.write}, s.sources...)
+	return append(files, s.bootstrap)
 }
 
 // Started closes the host's copies of all child endpoints and source handles.
@@ -117,6 +124,10 @@ func (s *Session) Started(int) error {
 		f.Close()
 	}
 	s.sources = nil
+	if s.bootstrap != nil {
+		s.bootstrap.Close()
+		s.bootstrap = nil
+	}
 	return nil
 }
 

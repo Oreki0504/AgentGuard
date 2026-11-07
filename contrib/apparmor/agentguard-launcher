@@ -1,5 +1,5 @@
-# Debian/Ubuntu amd64 Phase 2B profile, attached only to the installed launcher.
-# Host sources are still authorized and pinned by trusted Runtime configuration.
+# Phase 2C: fixed Bootstrap Cx, scoped exec observer, readonly executable layer.
+# Installation/reload requires separate operator authorization.
 abi <abi/5.0>,
 include <tunables/global>
 
@@ -10,11 +10,17 @@ profile agentguard-launcher /usr/local/libexec/agentguard-launcher flags=(attach
   signal (send, receive) peer=agentguard-launcher,
   signal (send) peer=agentguard-launcher//workload,
   signal (receive) peer=unconfined,
+  # Initial TRACEME occurs in the parent domain, before the fixed Cx.
+  ptrace (trace, read, tracedby, readby) peer=agentguard-launcher,
+  ptrace (trace, read) peer=agentguard-launcher//workload,
   /usr/local/libexec/agentguard-launcher rix,
+  /usr/local/libexec/agentguard-bootstrap r,
   /proc/ r,
   /proc/** r,
   /proc/[0-9]*/{uid_map,gid_map,setgroups} w,
   /sys/kernel/mm/transparent_hugepage/hpage_pmd_size r,
+  # Inspect stacking before UserNS: a namespace-local label is insufficient.
+  /sys/kernel/security/apparmor/{.stacked,.ns_stacked} r,
   /dev/null rw,
   / r,
   /tmp/ r,
@@ -32,6 +38,7 @@ profile agentguard-launcher /usr/local/libexec/agentguard-launcher flags=(attach
   owner /tmp/agentguard-rootfs-*/** rw,
   mount options=(rw, rprivate) -> /,
   mount fstype=tmpfs options=(rw, nosuid, nodev) -> /tmp/agentguard-rootfs-*/,
+  mount fstype=tmpfs options=(rw, nosuid, nodev, noexec) -> /tmp/agentguard-rootfs-*/{tmp,workspace}/,
   mount options=(rw, bind) /{home,tmp}/** -> /tmp/agentguard-rootfs-*/**,
   mount options=(rw, remount, bind, nosuid, nodev, noexec) -> /tmp/agentguard-rootfs-*/**,
   mount options=(ro, remount, bind, nosuid, nodev, noexec) -> /tmp/agentguard-rootfs-*/**,
@@ -41,14 +48,22 @@ profile agentguard-launcher /usr/local/libexec/agentguard-launcher flags=(attach
   pivot_root oldroot=/tmp/agentguard-rootfs-*/.oldroot/ /tmp/agentguard-rootfs-*/,
   umount /.oldroot/,
   /.oldroot/ w,
-  /bin/ r,
-  /bin/** rCx -> workload,
+  mount options=(ro, remount, nosuid, nodev) -> /,
+  # These are private mount paths after pivot_root. No executable permission.
+  owner /tmp/** rw,
+  /workspace/ r,
+  /.agentguard/ r,
+  /.agentguard/bootstrap rCx -> workload,
 
   profile workload {
+    ptrace (tracedby, readby) peer=agentguard-launcher,
     signal (send, receive) peer=agentguard-launcher//workload,
     signal (receive) peer=agentguard-launcher,
     signal (receive) peer=unconfined,
     / r,
+    /.agentguard/ r,
+    # Read the running image for final identity checks; no bootstrap re-entry.
+    /.agentguard/bootstrap mr,
     /bin/ r,
     /bin/** rix,
     /lib{,64}/ r,

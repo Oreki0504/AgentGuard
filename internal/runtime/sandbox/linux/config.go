@@ -2,6 +2,7 @@
 package linux
 
 import (
+	"encoding/json"
 	"fmt"
 	"path"
 	"strings"
@@ -9,7 +10,8 @@ import (
 )
 
 const (
-	Version               = 1
+	// Version 2 requires the Bootstrap source FD and kernel-confirmed Guest READY.
+	Version               = 2
 	DefaultStartupTimeout = 5 * time.Second
 	MaxStartupTimeout     = 30 * time.Second
 	MaxConfigSize         = 64 * 1024
@@ -49,7 +51,19 @@ func overlaps(a, b string) bool {
 	return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
 }
 
+// Validate checks both launch framing and the C contract before allocation.
 func (c Config) Validate() error {
+	if _, err := encodeBootstrapConfig(c); err != nil {
+		return err
+	}
+	data, err := json.Marshal(c)
+	if err != nil || len(data) > MaxConfigSize {
+		return fmt.Errorf("launch configuration exceeds frame bounds")
+	}
+	return nil
+}
+
+func (c Config) validateBase() error {
 	if c.Version != Version || c.WorkloadID == "" || len(c.WorkloadID) > 256 || strings.ContainsRune(c.WorkloadID, 0) {
 		return fmt.Errorf("invalid protocol version or workload identity")
 	}
