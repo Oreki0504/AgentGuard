@@ -177,9 +177,16 @@ func Run(ctx context.Context, req Request) (Result, error) {
 			}
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 			<-waitCh
-			return Result{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: -1,
-				Duration: time.Since(start), TimedOut: errors.Is(readyErr, context.DeadlineExceeded),
-				Canceled: errors.Is(ctx.Err(), context.Canceled)}, errors.Join(fmt.Errorf("sandbox startup: %w", readyErr), hookErr)
+			return Result{
+				Stdout:          stdout.String(),
+				Stderr:          stderr.String(),
+				StdoutTruncated: stdout.truncated,
+				StderrTruncated: stderr.truncated,
+				ExitCode:        -1,
+				Duration:        time.Since(start),
+				TimedOut:        errors.Is(readyErr, context.DeadlineExceeded),
+				Canceled:        errors.Is(ctx.Err(), context.Canceled),
+			}, errors.Join(fmt.Errorf("sandbox startup: %w", readyErr), hookErr)
 		}
 	}
 

@@ -1,6 +1,7 @@
 package linux
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -96,6 +97,9 @@ func TestBootstrapNullStdioHelper(t *testing.T) {
 	if wantError {
 		if err == nil {
 			t.Fatal("unsafe stdio input accepted")
+		}
+		if mode == "closed" && !errors.Is(err, syscall.EBADF) {
+			t.Fatalf("closed stdin must fail in parent validation before Cx: %v", err)
 		}
 		return
 	}

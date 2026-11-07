@@ -16,6 +16,12 @@ fi
   "$library" -Wl,--wrap=prctl,--wrap=seccomp_load -o "$temporary/bootstrap-test"
 CGO_ENABLED=0 go build -o "$temporary/go-guest" ./cmd/agentguard-bootstrap/testdata/guest.go
 "$temporary/bootstrap-test" "$temporary/go-guest"
+# Separate executable, linked without wrappers: real kernel load refusal and
+# independent EXITKILL controls with/without the flag, outside a PID namespace.
+"${CC:-cc}" -std=c11 -O2 -Wall -Wextra -Werror -fstack-protector-strong \
+  -D_FORTIFY_SOURCE=3 -I "$include" cmd/agentguard-bootstrap/kernel_test.c \
+  "$library" -o "$temporary/kernel-test"
+"$temporary/kernel-test"
 # The actual artifact has no export/fault-injection/test bypass modes.
 set +e
 env -i bin/agentguard-bootstrap > "$temporary/stdout" 2> "$temporary/stderr"

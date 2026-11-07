@@ -281,9 +281,10 @@ sudo sh scripts/install-launcher.sh
 systemd-run --user --scope -p Delegate=yes -- sh scripts/test-integration.sh -run '^TestSandboxExecutionIntegration$'
 ```
 
-The integration script creates a manager leaf inside its dedicated delegated
-scope, enables CPU/memory/PID controllers, and verifies that the installed
-launcher matches `bin/agentguard-launcher`. Pass the specific authorized test
+The integration script first verifies that the installed Launcher and Bootstrap
+match `bin/agentguard-launcher` and `bin/agentguard-bootstrap`. Only then does it
+create a manager leaf inside its dedicated delegated scope and enable
+CPU/memory/PID controllers. Pass the specific authorized test
 selector; an unrestricted invocation runs all tests. Missing
 integration prerequisites produce explicit skips in ordinary test runs;
 explicit but invalid prerequisites fail. The scoped profile supports guest

@@ -3,10 +3,49 @@ package runner
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"testing"
 	"time"
 )
+
+func TestStartupFailurePreservesOutputTruncation(t *testing.T) {
+	for _, excess := range []int{0, 1} {
+		t.Run(fmt.Sprintf("excess-%d", excess), func(t *testing.T) {
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			defer w.Close()
+			failure := errors.New("bootstrap rejected input")
+			ready := false
+			// The independent status FD is written after both output streams.
+			// Waiting on it avoids a race between rejection and output capture.
+			script := fmt.Sprintf("/usr/bin/head -c %d /dev/zero; /usr/bin/head -c %d /dev/zero >&2; printf x >&3", maxCapturedOutputBytes+excess, maxCapturedOutputBytes+excess)
+			result, err := Run(context.Background(), Request{
+				Command: "/bin/sh", Args: []string{"-c", script}, ExtraFiles: []*os.File{w},
+				Startup: &Startup{Timeout: 3 * time.Second, Wait: func(ctx context.Context) error {
+					stop := context.AfterFunc(ctx, func() { r.Close() })
+					defer stop()
+					var status [1]byte
+					if _, err := io.ReadFull(r, status[:]); err != nil {
+						return err
+					}
+					return failure
+				}},
+				Hooks: Hooks{OnStarted: func(int) error { return w.Close() }, OnReady: func(int) error { ready = true; return nil }},
+			})
+			if !errors.Is(err, failure) || ready || result.ExitCode != -1 ||
+				len(result.Stdout) != maxCapturedOutputBytes || len(result.Stderr) != maxCapturedOutputBytes ||
+				result.StdoutTruncated != (excess != 0) || result.StderrTruncated != (excess != 0) {
+				t.Fatalf("err=%v ready=%t exit=%d stdout=%d/%t stderr=%d/%t", err, ready, result.ExitCode,
+					len(result.Stdout), result.StdoutTruncated, len(result.Stderr), result.StderrTruncated)
+			}
+		})
+	}
+}
 
 func TestStartupFailureNeverCallsReady(t *testing.T) {
 	for _, mode := range []string{"early-exit", "error", "timeout", "cancel"} {

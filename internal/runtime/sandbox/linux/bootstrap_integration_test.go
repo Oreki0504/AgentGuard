@@ -87,7 +87,7 @@ func TestBootstrapConfinedExec(t *testing.T) {
 		t.Fatal(err)
 	}
 	probe.Close()
-	for _, mode := range []string{"shell", "go", "missing-loader", "regular-stdio", "bad-stdio", "timeout", "cancel", "tracer-exit"} {
+	for _, mode := range []string{"shell", "go", "missing-loader", "regular-stdio", "bad-stdio", "closed-stdio-diagnostic", "timeout", "cancel", "tracer-exit"} {
 		t.Run(mode, func(t *testing.T) {
 			files, err := ShellFiles()
 			if err != nil {
@@ -176,11 +176,12 @@ func TestBootstrapConfinedExec(t *testing.T) {
 			t.Logf("READY=%d launcher_exit=%d error=%v\nstdout=%s\nstderr=%s",
 				ready, result.ExitCode, runErr, result.Stdout, result.Stderr)
 			expectedFailure := map[string]string{
-				"missing-loader": "agentguard-bootstrap: guest exec",
-				"bad-stdio":      "agentguard-bootstrap: stdio access",
-				"timeout":        "guest exec confirmation timed out",
-				"cancel":         "guest exec confirmation canceled",
-				"tracer-exit":    "test tracer exiting after CONT",
+				"missing-loader":          "agentguard-bootstrap: guest exec",
+				"bad-stdio":               "agentguard-bootstrap: stdio access",
+				"closed-stdio-diagnostic": "secure stdio diagnosis confirmed",
+				"timeout":                 "guest exec confirmation timed out",
+				"cancel":                  "guest exec confirmation canceled",
+				"tracer-exit":             "test tracer exiting after CONT",
 			}[mode]
 			if expectedFailure != "" {
 				if runErr == nil || ready != 0 || !strings.Contains(result.Stderr, expectedFailure) {
@@ -304,6 +305,11 @@ func TestBootstrapConfinedInitHelper(t *testing.T) {
 		failed("bootstrap contract", err)
 	}
 	streams := []*os.File{os.Stdin, os.Stdout, os.Stderr, contract}
+	if c.WorkloadID == "closed-stdio-diagnostic" {
+		// Reproduce the original a11 fixture after the production parent has
+		// validated stdio. Observe secure-libc startup without changing C.
+		streams[0] = nil
+	}
 	if c.WorkloadID == "bad-stdio" {
 		// A closed stdin may fail in libc's secure startup before C main.
 		// Keep fd 0 present but unreadable so C's access check is exercised.
@@ -344,6 +350,12 @@ func TestBootstrapConfinedInitHelper(t *testing.T) {
 	}
 	ops := kernelTraceOps()
 	actual := ops
+	if c.WorkloadID == "closed-stdio-diagnostic" {
+		actual, err = traceSecureStdio(pid, actual)
+		if err != nil {
+			failed("secure stdio diagnostics", err)
+		}
+	}
 	tid := syscall.Gettid()
 	ops.wait = func(want int, status *syscall.WaitStatus, flags int, usage *syscall.Rusage) (int, error) {
 		if syscall.Gettid() != tid {

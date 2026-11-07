@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -126,39 +127,45 @@ func main() {
 		result, err = runner.Run(ctx, runner.Request{Command: command, Args: args, Timeout: *timeout, WorkingDir: *workingDir, Env: env})
 	}
 
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "agentguard: %v\n", err)
-		os.Exit(1)
+	if code := reportResult(result, err, os.Stdout, os.Stderr); code != 0 {
+		os.Exit(code)
 	}
+}
 
-	fmt.Fprint(os.Stdout, result.Stdout)
-	fmt.Fprint(os.Stderr, result.Stderr)
+// Startup errors can carry Bootstrap diagnostics and truncated output. Emit
+// those before the Runtime error, using the same output path as normal exits.
+func reportResult(result runner.Result, err error, stdout, stderr io.Writer) int {
+	fmt.Fprint(stdout, result.Stdout)
+	fmt.Fprint(stderr, result.Stderr)
 
 	if result.StdoutTruncated {
-		fmt.Fprintln(os.Stderr,
+		fmt.Fprintln(stderr,
 			"agentguard: warning: stdout was truncated")
 	}
 
 	if result.StderrTruncated {
-		fmt.Fprintln(os.Stderr,
+		fmt.Fprintln(stderr,
 			"agentguard: warning: stderr was truncated")
+	}
+
+	if err != nil {
+		fmt.Fprintf(stderr, "agentguard: %v\n", err)
+		return 1
 	}
 
 	if result.TimedOut {
 		fmt.Fprintf(
-			os.Stderr,
+			stderr,
 			"agentguard: command timed out after %v\n",
 			result.Duration,
 		)
-		os.Exit(124)
+		return 124
 	}
 
 	if result.Canceled {
-		fmt.Fprintln(os.Stderr, "agentguard: canceled")
-		os.Exit(130)
+		fmt.Fprintln(stderr, "agentguard: canceled")
+		return 130
 	}
 
-	if result.ExitCode != 0 {
-		os.Exit(result.ExitCode)
-	}
+	return result.ExitCode
 }

@@ -38,6 +38,22 @@ There is no extra hash-pinning scheme. The host-side wiring reuses the
 launcher's trusted path/ancestor validation and pins the approved source before
 copying it into the sandbox; ELF shape alone does not establish provenance.
 
+The two installation scripts do not provide a transaction across Bootstrap,
+Launcher and the loaded AppArmor policy. Before an update, stop new jobs, wait
+for existing jobs and their resources to be cleaned up, and save root-owned
+copies of all three installed files with their ownership and modes. Also record
+the loaded parent/child profiles' enforce modes and policy hashes. Keep this
+backup until the update has passed its installed-path checks.
+
+If an update fails, keep job admission stopped. Confirm no AgentGuard processes,
+cgroups or rootfs mounts remain before restoring the saved policy file and
+reloading it with `apparmor_parser -r -K`; restore both saved executables using
+temporary files and atomic renames. Check file contents, ownership and modes,
+and the loaded profiles' modes and hashes against the backup before resuming
+jobs. Restoring only the policy file does not restore the kernel's loaded
+policy. An interrupted or failed recovery requires operator inspection; retain
+the backup and do not resume jobs while the installed state is uncertain.
+
 ## Bootstrap contract
 
 Only the fixed `/.agentguard/bootstrap` entry may transition through AppArmor
@@ -88,6 +104,13 @@ directories and missing streams are rejected. The trusted parent authorizes
 the objects behind standard streams; Bootstrap cannot infer that authorization
 from a file type. No FIFO-only production assumption is made.
 
+The parent rejects missing standard streams before Cx. This check also protects
+libc's secure-exec startup, which runs before C main: with AT_SECURE set, glibc
+may attempt to repair a closed stdin using `/dev/full`. That device is absent
+from the private rootfs, so bypassing the parent's check can abort in libc
+before Bootstrap can emit its own diagnostic. The confined closed-stdio
+diagnostic test observes this boundary without weakening the rootfs or policy.
+
 After preparation, `close_range(3, UINT_MAX, 0)` closes protocol and source
 descriptors. Bootstrap verifies FD 3 is EBADF, scans `/proc/self/fd` for any
 remaining descriptor above stderr, and checks the scan descriptor's closure
@@ -130,9 +153,22 @@ rootfs; uncertain cleanup retains resources for inspection.
 
 `scripts/test-bootstrap.sh` exercises configuration, labels, capabilities,
 executable metadata, standard streams, FD closure, default-deny rules and
-shell/Go child execution. NNP/filter setup failures use test-only linker
-wrapping; these are simulated error branches rather than actual host kernel
-filter-load refusals. No fault-injection mode is compiled into production.
+shell/Go child execution. NNP/filter setup branches use test-only linker
+wrapping. A separate executable without wrappers also installs an inherited
+seccomp restriction that makes the kernel reject valid filter loads through
+both seccomp and prctl with EACCES. It verifies that the real Bootstrap filter
+installer emits its diagnostic and exits 125 instead of continuing toward
+Guest exec. This covers kernel policy refusal, not every possible kernel load
+failure such as filter-budget exhaustion. No fault-injection mode is compiled
+into production.
+
+The same executable tests PTRACE_O_EXITKILL independently: it kills only the
+tracer PID and compares the tracee's actual wait status with a no-EXITKILL
+control. Both remain in the host PID namespace, without cgroup cleanup or a
+parent-death signal. A test subreaper collects all descendants; the positive
+control requires kernel SIGKILL, while the negative control must survive until
+explicit cleanup. This isolates EXITKILL from the production PID1 and Runner
+cleanup mechanisms.
 
 The Go suite checks protocol compatibility, descriptor ownership, exec-event
 identity, readiness ordering and lifecycle failures. Host integration tests
