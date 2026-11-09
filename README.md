@@ -7,7 +7,7 @@
 The project separates **security policy** from **enforcement** so that agent-controlled actions can be evaluated, constrained, isolated, and audited before they reach sensitive host capabilities.
 
 > **Status:** Early development.  
-> Current phase: **Phase 2C — Bootstrap integrated; selected host acceptance verified**
+> Current phase: **Phase 3 — Policy Engine**
 
 ---
 
@@ -197,7 +197,7 @@ Development is incremental:
 Phase 0   Design Baseline
 Phase 1   Execution Core
 Phase 2   Workload + Linux Sandbox
-Phase 3   Policy Engine
+Phase 3   Policy Engine             <- Current phase
 Phase 4   Tool Gateway              <- First MVP
 Phase 5   Network Gateway
 Phase 6   Model Gateway
@@ -241,6 +241,8 @@ The first sandbox backend will use Linux security mechanisms directly.
 ---
 
 ## Development Status
+
+Phase 3 architecture design is in progress. Details will be added once the design is ready.
 
 AgentGuard has completed Phase 2B — Namespace + Filesystem Isolation
 on the tested Linux development environment.

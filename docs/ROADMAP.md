@@ -8,6 +8,8 @@
 >
 > This file defines **what to build, in what order, and how to know each phase is complete**.
 
+Current phase: **Phase 3 — Policy Engine**. Architecture design is in progress.
+
 ---
 
 ## Phase 0 — Design Baseline
